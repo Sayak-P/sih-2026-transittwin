@@ -11,6 +11,18 @@ import uuid
 DISRUPTIONS_DB = {}
 
 class DisruptionListView(APIView):
+    def get(self, request):
+        """
+        Returns all active disruptions from the database, serialized.
+        """
+        from core.models import Disruption as DbDisruption
+        from core.serializers import DisruptionSerializer
+        
+        # We fetch active disruptions from DB to include external ones
+        disruptions = DbDisruption.objects.filter(is_active=True)
+        serializer = DisruptionSerializer(disruptions, many=True)
+        return Response(serializer.data)
+
     def post(self, request):
         """
         Creates a new disruption scenario.

@@ -11,21 +11,25 @@ def calculate_blast_radius(disruption_id: int,
     """
     Compares baseline vs disrupted metrics to determine the network blast radius.
     """
-    delta_waiting = (disrupted_metrics.get("total_waiting_seconds", 0) - baseline_metrics.get("total_waiting_seconds", 0)) / 60.0
-    delta_avg_waiting = disrupted_metrics.get("average_waiting_minutes", 0) - baseline_metrics.get("average_waiting_minutes", 0)
-    delta_max_queue = disrupted_metrics.get("max_queue_size", 0) - baseline_metrics.get("max_queue_size", 0)
-    delta_max_crowding = disrupted_metrics.get("max_crowding_ratio", 0) - baseline_metrics.get("max_crowding_ratio", 0)
+    # Helper to safely get numeric values, defaulting to 0 if None
+    def safe_get(d, key):
+        val = d.get(key, 0)
+        return val if val is not None else 0
+
+    delta_waiting = (safe_get(disrupted_metrics, "total_waiting_seconds") - safe_get(baseline_metrics, "total_waiting_seconds")) / 60.0
+    delta_avg_waiting = safe_get(disrupted_metrics, "average_waiting_minutes") - safe_get(baseline_metrics, "average_waiting_minutes")
+    delta_max_queue = safe_get(disrupted_metrics, "max_queue_size") - safe_get(baseline_metrics, "max_queue_size")
+    delta_max_crowding = safe_get(disrupted_metrics, "max_crowding_ratio") - safe_get(baseline_metrics, "max_crowding_ratio")
     
     # Calculate affected passengers (difference in remaining passengers + denied boardings)
-    affected_passengers = (disrupted_metrics.get("passengers_remaining", 0) - baseline_metrics.get("passengers_remaining", 0)) + \
-                          (disrupted_metrics.get("capacity_denied_boardings", 0) - baseline_metrics.get("capacity_denied_boardings", 0))
+    affected_passengers = (safe_get(disrupted_metrics, "passengers_remaining") - safe_get(baseline_metrics, "passengers_remaining")) + \
+                          (safe_get(disrupted_metrics, "capacity_denied_boardings") - safe_get(baseline_metrics, "capacity_denied_boardings"))
 
     # Calculate propagation depth
     propagation_depth = 0
     if causal_graph:
         propagation_depth = max([node.get("depth", 0) for node in causal_graph])
-        
-    accessibility_impact = (disrupted_metrics.get("accessibility_denied_boardings", 0) - baseline_metrics.get("accessibility_denied_boardings", 0)) > 0
+    accessibility_impact = (safe_get(disrupted_metrics, "accessibility_denied_boardings") - safe_get(baseline_metrics, "accessibility_denied_boardings")) > 0
     
     return BlastRadiusResult(
         disruption_id=disruption_id,

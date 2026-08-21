@@ -46,17 +46,35 @@ class CandidateGenerator:
         
         for v_id in affected_vehicles:
             # Check if network graph allows bypassing
+            from django.utils import timezone
+            from datetime import timedelta
+            
             G = nx.DiGraph()
             for edge in Edge.objects.all():
                 if str(edge.id) != blocked_edge_id: # Remove blocked edge
-                    G.add_edge(edge.source.id, edge.target.id, edge_id=edge.id, distance=edge.distance)
+                    # Calculate dynamic travel time based on live traffic
+                    # Check for data staleness to prevent routing ghosts
+                    is_stale = False
+                    if edge.data_source == 'TOMTOM' and edge.last_updated_at:
+                        age = timezone.now() - edge.last_updated_at
+                        if age > timedelta(minutes=15):
+                            is_stale = True
+                            
+                    if edge.data_source == 'ESTIMATED' or is_stale:
+                        # Fallback to free flow or baseline to prevent ghost congestion routing
+                        traffic_speed = max(0.1, edge.free_flow_speed if edge.free_flow_speed else edge.current_traffic_speed)
+                    else:
+                        traffic_speed = max(0.1, edge.current_traffic_speed) # prevent div by zero
+                        
+                    travel_time = edge.distance / traffic_speed
+                    G.add_edge(edge.source.id, edge.target.id, edge_id=edge.id, distance=edge.distance, travel_time=travel_time)
                     
             source_node = blocked_edge.source.id
             target_node = blocked_edge.target.id
             
             try:
-                # Find shortest path bypassing the block
-                path_nodes = nx.shortest_path(G, source=source_node, target=target_node, weight='distance')
+                # Find shortest path bypassing the block using TRAVEL TIME, not distance
+                path_nodes = nx.shortest_path(G, source=source_node, target=target_node, weight='travel_time')
                 
                 # Convert nodes to edge IDs
                 bypass_edges = []

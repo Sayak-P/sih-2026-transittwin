@@ -48,6 +48,7 @@ class LiveStateEngine:
         new_state = copy.deepcopy(current) if current else {}
         new_state.update(payload)
         new_state['state_version'] = cls._increment_version()
+        new_state['received_at'] = timezone.now().isoformat()
         
         vehicles[vehicle_id] = new_state
         cache.set(cls.VEHICLES_KEY, vehicles)
@@ -65,6 +66,7 @@ class LiveStateEngine:
         new_state = copy.deepcopy(current) if current else {}
         new_state.update(payload)
         new_state['state_version'] = cls._increment_version()
+        new_state['received_at'] = timezone.now().isoformat()
         
         stops[stop_id] = new_state
         cache.set(cls.STOPS_KEY, stops)

@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from core.api_state_views import StateView, VehiclesView, StopsView, SnapshotView, VersionView, SimulationBaselineView, SystemHealthView, DemoResetView
+from core.api_health_views import TwinStatusView
 from core.api_disruption_views import DisruptionListView, DisruptionSimulateView
 from core.api_sandbox_views import SandboxGenerateView, SandboxApproveView
 
@@ -34,6 +35,7 @@ urlpatterns = [
     path("api/v1/twin/version/", VersionView.as_view()),
     path("api/v1/twin/snapshots/", SnapshotView.as_view()),
     path("api/v1/twin/simulate-baseline/", SimulationBaselineView.as_view()),
+    path("api/v1/twin/status/", TwinStatusView.as_view()),
     path("api/v1/sandbox/generate/", SandboxGenerateView.as_view()),
     path("api/v1/sandbox/<str:candidate_id>/approve/", SandboxApproveView.as_view()),
     path("api/v1/system/health/", SystemHealthView.as_view()),

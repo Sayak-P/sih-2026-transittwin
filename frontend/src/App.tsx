@@ -31,9 +31,12 @@ const mapTwinStateToDashboard = (data: any) => {
 
 function App() {
   const [stops, setStops] = useState<any[]>([]);
+  const stopsRef = useRef<any[]>([]);
   const [edges, setEdges] = useState<any[]>([]);
+  const [activeDisruptions, setActiveDisruptions] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<Record<string, any>>({});
   const [version, setVersion] = useState<number>(0);
+  const [twinStatus, setTwinStatus] = useState<any>(null);
   
   // System Health
   const [health, setHealth] = useState<any>({ backend: 'OFFLINE', database: 'OFFLINE' });
@@ -92,7 +95,10 @@ function App() {
   const fetchData = () => {
     fetch('/api/v1/stops/')
       .then(res => res.json())
-      .then(setStops)
+      .then(data => {
+        setStops(data);
+        stopsRef.current = data;
+      })
       .catch(err => console.error("Failed to fetch stops:", err));
       
     fetch('/api/v1/edges/')
@@ -100,6 +106,11 @@ function App() {
       .then(setEdges)
       .catch(err => console.error("Failed to fetch edges:", err));
       
+    fetch('/api/v1/disruptions/')
+      .then(res => res.json())
+      .then(setActiveDisruptions)
+      .catch(err => console.error("Failed to fetch disruptions:", err));
+
     fetch('/api/v1/twin/state/')
       .then(res => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -107,7 +118,7 @@ function App() {
       })
       .then(data => {
         setConnectionError(null);
-        if (data.vehicles) setVehicles(data.vehicles);
+        if (data.vehicles) setVehicles(prev => ({ ...data.vehicles, ...prev }));
         if (data.version) setVersion(data.version);
         setKpi(mapTwinStateToDashboard(data));
       })
@@ -130,7 +141,13 @@ function App() {
       .catch(err => {
         console.error("Health check failed:", err);
         setHealth({ backend: 'OFFLINE', database: 'OFFLINE' });
+        setConnectionError("Backend API Unreachable");
       });
+
+    fetch('/api/v1/twin/status/')
+      .then(res => res.json())
+      .then(setTwinStatus)
+      .catch(err => console.error("Failed to fetch twin status:", err));
   };
 
   useEffect(() => {
@@ -173,11 +190,16 @@ function App() {
             setVersion(data.state_version);
             // Recompute KPI locally instantly on vehicle update
             setVehicles(currentVehicles => {
-              setKpi(mapTwinStateToDashboard({ vehicles: currentVehicles, stops }));
+              setKpi(mapTwinStateToDashboard({ vehicles: currentVehicles, stops: stopsRef.current }));
               return currentVehicles;
             });
           } else if (data.event === 'INTERVENTION_APPLIED') {
             setWorkflowState('VERIFIED');
+          } else if (data.event === 'traffic_updated') {
+            fetch('/api/v1/edges/').then(r => r.json()).then(setEdges);
+            fetch('/api/v1/twin/status/').then(r => r.json()).then(setTwinStatus);
+          } else if (data.event === 'incident_created') {
+            fetch('/api/v1/disruptions/').then(r => r.json()).then(setActiveDisruptions);
           }
         } catch (e) {
           console.error("Failed to parse WebSocket message:", e);
@@ -196,9 +218,10 @@ function App() {
       clearInterval(interval);
       clearInterval(warningInterval);
     };
-  }, [stops]); // Dependency on stops for KPI recompute
+  }, []); // Removed dependency on stops; KPI utilizes stopsRef inside WebSocket closure.
 
   const triggerDemoReset = () => {
+    if (!window.confirm("WARNING: This will reset the entire demo state. Continue?")) return;
     setIsProcessing(true);
     fetch('/api/v1/system/demo-reset/', { method: 'POST' })
       .then(res => res.json())
@@ -329,8 +352,31 @@ function App() {
   const edgesGeoJSON = {
     type: 'FeatureCollection',
     features: edges.map(edge => {
-      let color = '#94a3b8';
+      let color = '#94a3b8'; // Default slate
       let width = 2;
+      
+      // Calculate traffic congestion color
+      if (edge.free_flow_speed > 0 && edge.current_traffic_speed >= 0) {
+        const ratio = edge.current_traffic_speed / edge.free_flow_speed;
+        if (ratio < 0.3) {
+          color = '#ef4444'; // Red (Severe)
+          width = 3;
+        } else if (ratio < 0.7) {
+          color = '#eab308'; // Yellow (Moderate)
+          width = 3;
+        } else {
+          color = '#22c55e'; // Green (Free flow)
+        }
+      }
+
+      // Dim estimated, simulated, or stale TOMTOM data
+      const isStale = edge.last_updated_at && (new Date().getTime() - new Date(edge.last_updated_at).getTime() > 300000);
+      if (edge.data_source === 'ESTIMATED' || edge.data_source === 'SIMULATION' || (edge.data_source === 'TOMTOM' && isStale)) {
+        if (color === '#ef4444') color = '#fca5a5';
+        else if (color === '#eab308') color = '#fde047';
+        else if (color === '#22c55e') color = '#86efac';
+      }
+
       if (blastRadius && blastRadius.directly_affected_edges.includes(edge.id.toString())) {
         color = '#ef4444'; width = 6;
       } else if (selectedEdge && edge.id === selectedEdge.id) {
@@ -355,10 +401,18 @@ function App() {
       <header className="absolute top-0 left-0 right-0 bg-zinc-950/80 backdrop-blur-md text-white p-3 flex justify-between items-center z-20 border-b border-zinc-800 shadow-lg">
         <div className="flex items-center gap-4">
           <h1 className="text-xl font-bold tracking-wider font-sans text-zinc-100">TRANSIT TWIN COMMAND CENTER</h1>
-          <span className="text-xs font-mono bg-emerald-900/50 text-emerald-400 px-2 py-0.5 rounded border border-emerald-700/50 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            LIVE
-          </span>
+          {twinStatus && (
+            <div className={`px-3 py-1 rounded text-xs font-bold tracking-wider border flex items-center gap-2 ${
+              twinStatus.mode === 'LIVE' ? 'bg-emerald-900/30 text-emerald-400 border-emerald-800' :
+              twinStatus.mode === 'HYBRID' ? 'bg-yellow-900/30 text-yellow-400 border-yellow-800' :
+              'bg-cyan-900/30 text-cyan-400 border-cyan-800'
+            }`}>
+              <span className={`w-2 h-2 rounded-full shadow-lg ${twinStatus.mode === 'LIVE' ? 'bg-emerald-400 animate-pulse shadow-emerald-400/50' : twinStatus.mode === 'HYBRID' ? 'bg-yellow-400 shadow-yellow-400/50' : 'bg-cyan-400 shadow-cyan-400/50'}`}></span>
+              {twinStatus.mode === 'LIVE' ? 'LIVE (REAL DATA ONLY)' :
+               twinStatus.mode === 'HYBRID' ? 'HYBRID (REAL TRAFFIC + SIM FLEET)' :
+               'SIMULATION (FULL SIMULATION)'}
+            </div>
+          )}
         </div>
         <div className="flex gap-4 items-center text-xs font-bold">
           <div className="flex gap-2 font-mono">
@@ -376,7 +430,7 @@ function App() {
         {/* Full Bleed Map */}
         <div className="absolute inset-0 z-0">
           <Map 
-            initialViewState={{ longitude: 77.1025, latitude: 28.7041, zoom: 14 }} 
+            initialViewState={{ longitude: 85.83, latitude: 20.29, zoom: 13 }} 
             mapStyle={MAP_STYLE} 
             style={{ width: '100%', height: '100%' }}
             interactiveLayerIds={['edges-layer']}
@@ -400,6 +454,29 @@ function App() {
                 <Layer id="edges-layer" type="line" paint={{ 'line-color': ['get', 'color'], 'line-width': ['get', 'width'] }} />
               </Source>
             )}
+            
+            {activeDisruptions.filter(d => d.source === 'EXTERNAL').map(disruption => {
+              const edge = edges.find(e => e.id.toString() === disruption.affected_entity_id);
+              if (!edge || !edge.geometry || edge.geometry.length === 0) return null;
+              // Just place the marker at the start node of the edge for simplicity
+              const [lon, lat] = edge.geometry[0];
+              const ageMs = disruption.created_at ? (new Date().getTime() - new Date(disruption.created_at).getTime()) : 0;
+              const isStale = ageMs > 3600000;
+              return (
+                <Marker key={disruption.id} longitude={lon} latitude={lat} onClick={(e) => {
+                  e.originalEvent.stopPropagation();
+                  setSelectedEdge(edge);
+                  setSelectedStop(null);
+                  setSelectedVehicle(null);
+                  setDisruptionType(disruption.type || 'ROAD_BLOCK');
+                }}>
+                  <div className={`flex items-center justify-center w-6 h-6 rounded-full border-2 border-zinc-900 cursor-pointer shadow-lg ${isStale ? 'bg-zinc-600' : 'bg-rose-500 shadow-[0_0_12px_rgba(225,29,72,0.8)] animate-pulse'}`} title={`Incident: ${disruption.description} | Source: ${disruption.source}`}>
+                    <span className="text-white text-xs font-black">!</span>
+                  </div>
+                </Marker>
+              );
+            })}
+
             {stops.map(stop => {
               let bgColor = 'bg-slate-400';
               if (blastRadius) {
@@ -423,26 +500,48 @@ function App() {
                 </Marker>
               );
             })}
-            {Object.values(vehicles).map(vehicle => (
-              <Marker key={vehicle.vehicle_id} longitude={vehicle.lon} latitude={vehicle.lat} onClick={(e) => {
-                e.originalEvent.stopPropagation();
-                setSelectedVehicle(vehicle);
-                setSelectedStop(null);
-                setSelectedEdge(null);
-                setDisruptionType('VEHICLE_BREAKDOWN');
-              }}>
-                <div className={`w-4 h-4 rounded-full bg-cyan-500 border-2 border-zinc-900 shadow-[0_0_10px_rgba(6,182,212,0.8)] flex items-center justify-center text-[8px] font-bold text-zinc-900 cursor-pointer ${selectedVehicle?.vehicle_id === vehicle.vehicle_id ? 'ring-2 ring-cyan-200 ring-offset-2 ring-offset-zinc-900' : ''}`}>B</div>
-              </Marker>
-            ))}
+            {Object.values(vehicles).map(vehicle => {
+              const isSim = vehicle.data_source === 'SIMULATION';
+              const ageMs = vehicle.last_updated_at ? (new Date().getTime() - new Date(vehicle.last_updated_at).getTime()) : 0;
+              const isStale = ageMs > 60000;
+              const isOffline = ageMs > 900000; // 15 minutes
+              
+              if (isOffline) return null; // Cull offline vehicles
+              
+              const bgClass = isStale ? 'bg-zinc-500 shadow-none' : (isSim ? 'bg-cyan-950 border-dashed border-cyan-500 text-cyan-200' : 'bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.8)] text-zinc-900');
+              const badgeText = isSim ? 'SIM' : 'REAL';
+              
+              return (
+                <Marker key={vehicle.vehicle_id} longitude={vehicle.lon} latitude={vehicle.lat} onClick={(e) => {
+                  e.originalEvent.stopPropagation();
+                  setSelectedVehicle(vehicle);
+                  setSelectedStop(null);
+                  setSelectedEdge(null);
+                  setDisruptionType('VEHICLE_BREAKDOWN');
+                }}>
+                  <div className={`w-7 h-4 rounded-full border-2 border-zinc-900 flex items-center justify-center text-[7px] font-bold cursor-pointer transition-colors ${bgClass} ${selectedVehicle?.vehicle_id === vehicle.vehicle_id ? 'ring-2 ring-cyan-200 ring-offset-2 ring-offset-zinc-900' : ''}`}>{badgeText}</div>
+                </Marker>
+              );
+            })}
           </Map>
 
-          {Object.keys(vehicles).length === 0 && (
+          {Object.keys(vehicles).length === 0 && !connectionError && (
             <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-zinc-900/90 text-zinc-300 px-6 py-4 rounded-lg shadow-2xl text-center border border-zinc-700 z-10 backdrop-blur-sm">
               <div className="font-bold mb-3 font-sans">No live vehicles loaded.</div>
               <button onClick={triggerDemoReset} disabled={isProcessing} className="bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded font-bold text-sm transition-colors shadow-[0_0_15px_rgba(8,145,178,0.5)]">
                 INITIALIZE DEMO
               </button>
             </div>
+          )}
+
+          {health.backend === 'OFFLINE' && (
+             <div className="absolute inset-0 z-20 flex items-center justify-center bg-zinc-950/80 backdrop-blur-sm">
+               <div className="bg-rose-950/90 border border-rose-900 text-white px-8 py-6 rounded-xl shadow-2xl text-center max-w-md">
+                 <h2 className="text-xl font-bold mb-2">SYSTEM OFFLINE</h2>
+                 <p className="text-sm text-rose-200 mb-4">Command Center cannot establish a connection to the primary API gateway. Please ensure backend services are running.</p>
+                 <div className="w-8 h-8 rounded-full border-4 border-rose-500 border-t-transparent animate-spin mx-auto"></div>
+               </div>
+             </div>
           )}
         </div>
         
@@ -492,6 +591,44 @@ function App() {
                   <div className="flex items-center gap-2 text-emerald-400"><span className="text-emerald-500">●</span> TELEMETRY STREAM ACTIVE</div>
                   <div className="flex items-center gap-2 text-emerald-400"><span className="text-emerald-500">●</span> PREDICTION ENGINE ACTIVE</div>
                   <div className="flex items-center gap-2 text-emerald-400"><span className="text-emerald-500">●</span> SIMULATION ENGINE READY</div>
+                  
+                  {twinStatus && twinStatus.providers && (
+                    <div className="pt-2 mt-2 border-t border-zinc-800 space-y-1">
+                      <div className="text-zinc-500 text-[10px] mb-2 uppercase tracking-widest">DATA PROVIDERS</div>
+                      
+                      <div className="flex justify-between items-center text-[10px] uppercase font-mono">
+                        <span className="text-zinc-400">TomTom Traffic</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[8px] text-zinc-500">{twinStatus.providers.tomtom.last_update ? new Date(twinStatus.providers.tomtom.last_update).toLocaleTimeString() : ''}</span>
+                          <span className={`font-bold ${twinStatus.providers.tomtom.status === 'ONLINE' ? 'text-emerald-400' : twinStatus.providers.tomtom.status === 'STALE' ? 'text-amber-400 animate-pulse' : 'text-zinc-500'}`}>{twinStatus.providers.tomtom.status}</span>
+                        </div>
+                      </div>
+                      
+                      <div className="flex justify-between items-center text-[10px] uppercase font-mono">
+                        <span className="text-zinc-400">TomTom Incidents</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[8px] text-zinc-500">{twinStatus.providers.tomtom.last_update ? new Date(twinStatus.providers.tomtom.last_update).toLocaleTimeString() : ''}</span>
+                          <span className={`font-bold ${twinStatus.providers.tomtom.status === 'ONLINE' ? 'text-emerald-400' : twinStatus.providers.tomtom.status === 'STALE' ? 'text-amber-400 animate-pulse' : 'text-zinc-500'}`}>{twinStatus.providers.tomtom.status}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex justify-between items-center text-[10px] uppercase font-mono">
+                        <span className="text-zinc-400">CRUT Telemetry</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[8px] text-zinc-500">{twinStatus.providers.crut.last_update ? new Date(twinStatus.providers.crut.last_update).toLocaleTimeString() : ''}</span>
+                          <span className={`font-bold ${twinStatus.providers.crut.status === 'ONLINE' ? 'text-emerald-400' : twinStatus.providers.crut.status === 'STALE' ? 'text-amber-400 animate-pulse' : 'text-zinc-500'}`}>{twinStatus.providers.crut.status}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex justify-between items-center text-[10px] uppercase font-mono">
+                        <span className="text-zinc-400">Simulation Fleet</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[8px] text-zinc-500">{twinStatus.providers.simulation.last_update ? new Date(twinStatus.providers.simulation.last_update).toLocaleTimeString() : ''}</span>
+                          <span className={`font-bold ${twinStatus.providers.simulation.status === 'ACTIVE' || twinStatus.providers.simulation.status === 'ONLINE' ? 'text-emerald-400' : twinStatus.providers.simulation.status === 'STALE' ? 'text-amber-400 animate-pulse' : twinStatus.providers.simulation.status === 'DISABLED' ? 'text-rose-500 line-through' : 'text-zinc-500'}`}>{twinStatus.providers.simulation.status}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Warnings List */}
@@ -573,6 +710,10 @@ function App() {
                           <div className="text-right text-cyan-400">{selectedVehicle.status || selectedVehicle.state}</div>
                           <div className="text-zinc-500">OCCUPANCY</div>
                           <div className="text-right text-zinc-200"><span className="font-bold">{selectedVehicle.occupancy}</span> / {selectedVehicle.capacity}</div>
+                          <div className="text-zinc-500">SOURCE</div>
+                          <div className={`text-right font-bold ${selectedVehicle.data_source === 'SIMULATION' ? 'text-cyan-400' : 'text-emerald-400'}`}>{selectedVehicle.data_source === 'SIMULATION' ? 'SIMULATION' : 'REAL (CRUT)'}</div>
+                          <div className="text-zinc-500">FRESHNESS</div>
+                          <div className="text-right text-zinc-300">{selectedVehicle.last_updated_at ? Math.round((new Date().getTime() - new Date(selectedVehicle.last_updated_at).getTime()) / 1000) + 's ago' : 'Unknown'}</div>
                         </div>
                       </div>
                     )}

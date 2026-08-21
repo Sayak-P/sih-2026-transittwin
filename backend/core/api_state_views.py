@@ -82,15 +82,27 @@ class DemoResetView(APIView):
     def post(self, request):
         from core.api_disruption_views import DISRUPTIONS_DB
         from core.api_sandbox_views import SANDBOX_RESULTS_DB
+        from django.conf import settings
         from core.management.commands.seed_demo_network import Command as SeedCommand
+        from core.management.commands.import_osm_network import Command as OsmCommand
+        
+        if getattr(settings, 'TRANSIT_TWIN_MODE', 'SIMULATION') == 'LIVE':
+            return Response({"error": "Demo reset is disabled in LIVE mode to prevent data corruption."}, status=403)
         
         # 1. Clear Transient DBs
         DISRUPTIONS_DB.clear()
         SANDBOX_RESULTS_DB.clear()
         
-        # 2. Reseed DB
-        seeder = SeedCommand()
-        seeder.handle()
+        # 2. Reseed DB based on mode
+        if settings.TRANSIT_TWIN_MODE == 'SIMULATION' or getattr(settings, 'USE_OSM', True):
+            # For now, always use OSM if available to preserve Bhubaneswar demo
+            # unless specifically forced to pure simulation Delhi grid.
+            # We'll use OSM by default for the SIH demo.
+            osm_seeder = OsmCommand()
+            osm_seeder.handle()
+        else:
+            seeder = SeedCommand()
+            seeder.handle()
 
         # 3. Reload Live State (Clear Cache)
         from django.core.cache import cache
@@ -113,16 +125,22 @@ class DemoResetView(APIView):
             })
             
         for v in Vehicle.objects.all():
+            if getattr(settings, 'TRANSIT_TWIN_MODE', 'SIMULATION') == 'LIVE':
+                continue
+                
             # Seed 1 vehicle as SPARE to allow SPARE_VEHICLE_DEPLOYMENT candidates to be FEASIBLE
             status = "SPARE" if v.identifier == "BUS-1006" else "ACTIVE"
+            sim_v_id = v.identifier if v.identifier.startswith("SIM-") else f"SIM-{v.identifier}"
+            
             process_vehicle_telemetry({
-                "vehicle_id": v.identifier,
+                "vehicle_id": sim_v_id,
                 "lat": v.lat,
                 "lon": v.lon,
                 "speed_kmh": 0.0,
                 "occupancy": 0,
                 "timestamp": timezone.now().isoformat(),
-                "status": status
+                "status": status,
+                "data_source": "SIMULATION"
             })
             
         return Response({"status": "Success", "message": "Demo environment reset successfully."})

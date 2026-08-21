@@ -28,9 +28,17 @@ def process_vehicle_telemetry(payload):
     occupancy = payload.get('occupancy', 0)
     if occupancy < 0:
         return False, "Occupancy cannot be negative"
+        
+    # Default data_source if not provided
+    if 'data_source' not in payload:
+        payload['data_source'] = 'SIMULATION'
+
+    if 'provider' not in payload:
+        payload['provider'] = 'INTERNAL' if payload['data_source'] == 'SIMULATION' else 'CHALO'
 
     # Optional: check DB if vehicle exists (skipped for speed if cached, but we can do a quick check)
-    if not Vehicle.objects.filter(identifier=vehicle_id).exists():
+    original_id = vehicle_id.replace("SIM-", "") if vehicle_id.startswith("SIM-") else vehicle_id
+    if not Vehicle.objects.filter(identifier=original_id).exists():
         return False, "Unknown vehicle ID"
 
     # 2. Update Live State
@@ -50,7 +58,11 @@ def process_vehicle_telemetry(payload):
         "lon": payload.get('lon'),
         "speed_kmh": payload.get('speed_kmh'),
         "occupancy": occupancy,
-        "status": payload.get('status', 'ACTIVE')
+        "status": payload.get('status', 'ACTIVE'),
+        "data_source": new_state.get('data_source'),
+        "provider": new_state.get('provider'),
+        "last_updated_at": payload.get('timestamp'),
+        "received_at": new_state.get('received_at')
     }
     
     async_to_sync(channel_layer.group_send)(

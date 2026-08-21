@@ -1,4 +1,5 @@
 import pytest
+from django.conf import settings
 from rest_framework.test import APIClient
 from core.api_state_views import LiveStateEngine
 from core.models import AuditLog, Vehicle
@@ -6,7 +7,9 @@ from core.models import AuditLog, Vehicle
 @pytest.mark.django_db
 class TestEndToEndDemo:
     def setup_method(self):
+        settings.TRANSIT_TWIN_MODE = 'SIMULATION'
         self.client = APIClient()
+
         
         # 1. Reset Demo
         response = self.client.post('/api/v1/system/demo-reset/')

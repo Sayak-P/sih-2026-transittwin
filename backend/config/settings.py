@@ -17,6 +17,9 @@ environ.Env.read_env(os.path.join(BASE_DIR.parent, '.env'))
 SECRET_KEY = env('DJANGO_SECRET_KEY', default='django-insecure-m=&qu$#7%bp@v463uq*ob1(gm4jao-gy)$j6oj-ie34@zcbl-u')
 DEBUG = env('DJANGO_DEBUG', default=True)
 
+TRANSIT_TWIN_MODE = os.environ.get('TRANSIT_TWIN_MODE', 'HYBRID')
+TOMTOM_API_KEY = env('TOMTOM_API_KEY', default='')
+
 ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS', default=['*'])
 
 INSTALLED_APPS = [
@@ -77,8 +80,8 @@ CHANNEL_LAYERS = {
 
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "transittwin-live-state",
+        "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+        "LOCATION": os.path.join(BASE_DIR, "django_cache"),
     }
 }
 

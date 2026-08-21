@@ -1,6 +1,13 @@
 from django.db import models
 from django.core.validators import MinValueValidator
 
+DATA_SOURCE_CHOICES = (
+    ('TOMTOM', 'TomTom API'),
+    ('CRUT', 'CRUT Telemetry'),
+    ('SIMULATION', 'Simulation Engine'),
+    ('ESTIMATED', 'Estimated/Fallback'),
+)
+
 class Stop(models.Model):
     name = models.CharField(max_length=255)
     lat = models.FloatField(default=0.0)
@@ -20,8 +27,14 @@ class Edge(models.Model):
     distance = models.FloatField(validators=[MinValueValidator(0.0)], help_text="Distance in meters")
     baseline_travel_time = models.FloatField(validators=[MinValueValidator(0.0)], help_text="Time in seconds")
     baseline_cost = models.FloatField(validators=[MinValueValidator(0.0)], default=0.0)
+    current_traffic_speed = models.FloatField(default=10.0, help_text="Current live traffic speed in m/s")
+    free_flow_speed = models.FloatField(default=10.0, help_text="Free flow speed in m/s")
+    data_source = models.CharField(max_length=20, choices=DATA_SOURCE_CHOICES, default='ESTIMATED')
+    last_updated_at = models.DateTimeField(auto_now_add=True)
+    received_at = models.DateTimeField(auto_now=True)
     is_accessible = models.BooleanField(default=True)
     is_active = models.BooleanField(default=True)
+    metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:
         constraints = [
@@ -91,11 +104,21 @@ class Disruption(models.Model):
         ('HIGH', 'High'),
         ('CRITICAL', 'Critical'),
     )
+    SOURCE_CHOICES = (
+        ('OPERATOR', 'Operator'),
+        ('EXTERNAL', 'External'),
+        ('SIMULATION', 'Simulation'),
+    )
     disruption_type = models.CharField(max_length=100)
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='OPERATOR')
+    data_source = models.CharField(max_length=20, choices=DATA_SOURCE_CHOICES, default='OPERATOR')
+    provider_incident_id = models.CharField(max_length=100, unique=True, null=True, blank=True)
     affected_stop = models.ForeignKey(Stop, on_delete=models.CASCADE, null=True, blank=True)
     affected_edge = models.ForeignKey(Edge, on_delete=models.CASCADE, null=True, blank=True)
     start_time = models.DateTimeField()
     expected_end_time = models.DateTimeField(null=True, blank=True)
+    last_updated_at = models.DateTimeField(auto_now=True)
+    received_at = models.DateTimeField(auto_now_add=True)
     severity = models.CharField(max_length=20, choices=SEVERITY_CHOICES)
     is_active = models.BooleanField(default=True)
     description = models.TextField(blank=True)
