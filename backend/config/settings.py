@@ -71,6 +71,17 @@ ASGI_APPLICATION = "config.asgi.application"
 DATABASES = {
     "default": env.db("POSTGRES_URL", default=f"sqlite:///{BASE_DIR}/db.sqlite3")
 }
+if "sqlite" in DATABASES["default"]["ENGINE"]:
+    DATABASES["default"].setdefault("OPTIONS", {})["timeout"] = 30
+    from django.db.backends.signals import connection_created
+    def set_sqlite_pragma(sender, connection, **kwargs):
+        if connection.vendor == 'sqlite':
+            cursor = connection.cursor()
+            cursor.execute('PRAGMA journal_mode=WAL;')
+            cursor.execute('PRAGMA busy_timeout=30000;')
+    connection_created.connect(set_sqlite_pragma)
+
+
 
 CHANNEL_LAYERS = {
     "default": {
@@ -80,8 +91,8 @@ CHANNEL_LAYERS = {
 
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
-        "LOCATION": os.path.join(BASE_DIR, "django_cache"),
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "transittwin_cache",
     }
 }
 
@@ -99,3 +110,10 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+# ---------- Merged Frontend (Vite build output) ----------
+FRONTEND_DIST_DIR = BASE_DIR.parent / "frontend" / "dist"
+STATICFILES_DIRS = [
+    FRONTEND_DIST_DIR / "assets",  # Vite hashed JS/CSS bundles
+]
+STATIC_ROOT = BASE_DIR / "staticfiles"

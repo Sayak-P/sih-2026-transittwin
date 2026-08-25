@@ -26,8 +26,10 @@ venv/
 # Django
 *.log
 local_settings.py
-db.sqlite3
-db.sqlite3-journal
+db.sqlite3*
+*.djcache
+django_cache/
+
 
 # Node
 node_modules/

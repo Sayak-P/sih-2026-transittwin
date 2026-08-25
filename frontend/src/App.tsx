@@ -2,6 +2,11 @@ import { useEffect, useState, useRef } from 'react';
 import Map, { Source, Layer, Marker } from 'react-map-gl/maplibre';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './App.css';
+import LandingPage from './LandingPage';
+import SmartBusNavigator from './SmartBusNavigator';
+import PredictionsDashboard from './PredictionsDashboard';
+import ReroutingDashboard from './ReroutingDashboard';
+import EmergencySOS from './EmergencySOS';
 
 const MAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
 
@@ -13,13 +18,13 @@ const getWebSocketUrl = (path: string) => {
 const mapTwinStateToDashboard = (data: any) => {
   const vList = Object.values(data.vehicles || {});
   const sList = Object.values(data.stops || {});
-  
+
   const activeCount = vList.filter((v: any) => v.status === 'ACTIVE' || v.state === 'ACTIVE').length;
   const delayedCount = vList.filter((v: any) => v.status === 'DELAYED' || v.state === 'DELAYED').length;
-  
+
   const vehiclePassengers = vList.reduce((acc: number, v: any) => acc + (Number(v.occupancy) || 0), 0) as number;
   const queuePassengers = sList.reduce((acc: number, s: any) => acc + (Number(s.queue_count) || 0), 0) as number;
-  
+
   return {
     active: activeCount,
     delayed: delayedCount,
@@ -37,12 +42,15 @@ function App() {
   const [vehicles, setVehicles] = useState<Record<string, any>>({});
   const [version, setVersion] = useState<number>(0);
   const [twinStatus, setTwinStatus] = useState<any>(null);
-  
+
+  // Navigation Page: 'LANDING', 'NAVIGATOR', 'COMMAND_CENTER', 'PREDICTIONS', or 'REROUTING'
+  const [currentPage, setCurrentPage] = useState<'LANDING' | 'NAVIGATOR' | 'COMMAND_CENTER' | 'PREDICTIONS' | 'REROUTING'>('LANDING');
+
   // System Health
   const [health, setHealth] = useState<any>({ backend: 'OFFLINE', database: 'OFFLINE' });
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [wsStatus, setWsStatus] = useState<'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED'>('DISCONNECTED');
-  
+
   // KPI Metrics
   const [kpi, setKpi] = useState({
     active: 0,
@@ -62,13 +70,13 @@ function App() {
 
   // Workflow State: NORMAL, WARNING, DISRUPTION, SANDBOX, APPROVE, VERIFIED
   const [workflowState, setWorkflowState] = useState<'NORMAL' | 'WARNING' | 'DISRUPTION' | 'SANDBOX' | 'APPROVE' | 'VERIFIED'>('NORMAL');
-  
+
   const [blastRadius, setBlastRadius] = useState<any>(null);
   const [currentDisruptionId, setCurrentDisruptionId] = useState<number | null>(null);
   const [sandboxResult, setSandboxResult] = useState<any>(null);
   const [profile, setProfile] = useState('BALANCED');
   const [selectedCandidate, setSelectedCandidate] = useState<any>(null);
-  
+
   const [isProcessing, setIsProcessing] = useState(false);
 
   const ws = useRef<WebSocket | null>(null);
@@ -79,12 +87,12 @@ function App() {
       .then(data => {
         const currentWarnings = data.warnings || [];
         setWarnings(currentWarnings);
-        
+
         // Auto-update workflow state if in Monitoring phase
         setWorkflowState(prev => {
           if (prev === 'NORMAL' || prev === 'WARNING') {
-             if (currentWarnings.some((w: any) => w.severity === 'CRITICAL')) return 'WARNING';
-             if (currentWarnings.length === 0) return 'NORMAL';
+            if (currentWarnings.some((w: any) => w.severity === 'CRITICAL')) return 'WARNING';
+            if (currentWarnings.length === 0) return 'NORMAL';
           }
           return prev;
         });
@@ -100,12 +108,12 @@ function App() {
         stopsRef.current = data;
       })
       .catch(err => console.error("Failed to fetch stops:", err));
-      
+
     fetch('/api/v1/edges/')
       .then(res => res.json())
       .then(setEdges)
       .catch(err => console.error("Failed to fetch edges:", err));
-      
+
     fetch('/api/v1/disruptions/')
       .then(res => res.json())
       .then(setActiveDisruptions)
@@ -155,25 +163,26 @@ function App() {
     fetchHealth();
     fetchWarnings();
     const interval = setInterval(fetchHealth, 10000);
+    const dataInterval = setInterval(fetchData, 1000);
     const warningInterval = setInterval(fetchWarnings, 10000);
 
     let reconnectTimeout: ReturnType<typeof setTimeout>;
     let retryDelay = 1000;
-    
+
     const connectWs = () => {
       if (ws.current && (ws.current.readyState === WebSocket.OPEN || ws.current.readyState === WebSocket.CONNECTING)) {
         return;
       }
       ws.current = new WebSocket(getWebSocketUrl('/ws/twin/'));
-      
+
       ws.current.onopen = () => {
         console.log("WebSocket connected");
         setWsStatus('CONNECTED');
         retryDelay = 1000;
       };
-      
+
       ws.current.onerror = (err) => console.error("WebSocket error:", err);
-      
+
       ws.current.onclose = () => {
         console.log(`WebSocket disconnected. Reconnecting in ${retryDelay}ms...`);
         setWsStatus('RECONNECTING');
@@ -181,7 +190,7 @@ function App() {
         reconnectTimeout = setTimeout(connectWs, retryDelay);
         retryDelay = Math.min(retryDelay * 2, 10000);
       };
-      
+
       ws.current.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
@@ -216,6 +225,7 @@ function App() {
       }
       clearTimeout(reconnectTimeout);
       clearInterval(interval);
+      clearInterval(dataInterval);
       clearInterval(warningInterval);
     };
   }, []); // Removed dependency on stops; KPI utilizes stopsRef inside WebSocket closure.
@@ -262,35 +272,35 @@ function App() {
     fetch('/api/v1/disruptions/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        type: disruptionType, 
-        entity_id, 
-        severity: 4, 
-        duration_minutes: disruptionDuration, 
-        description: `Operator Initiated ${disruptionType.replace(/_/g, ' ')}` 
+      body: JSON.stringify({
+        type: disruptionType,
+        entity_id,
+        severity: 4,
+        duration_minutes: disruptionDuration,
+        description: `Operator Initiated ${disruptionType.replace(/_/g, ' ')}`
       })
     })
-    .then(res => {
-      if (!res.ok) throw new Error("Failed to create disruption");
-      return res.json();
-    })
-    .then(data => {
-      setCurrentDisruptionId(data.id);
-      return fetch(`/api/v1/disruptions/${data.id}/simulate/`, { method: 'POST' });
-    })
-    .then(res => {
-      if (!res.ok) throw new Error("Simulation failed");
-      return res.json();
-    })
-    .then(data => {
-      setBlastRadius(data.blast_radius);
-      setWorkflowState('DISRUPTION');
-    })
-    .catch(err => {
-      console.error(err);
-      alert(err.message);
-    })
-    .finally(() => setIsProcessing(false));
+      .then(res => {
+        if (!res.ok) throw new Error("Failed to create disruption");
+        return res.json();
+      })
+      .then(data => {
+        setCurrentDisruptionId(data.id);
+        return fetch(`/api/v1/disruptions/${data.id}/simulate/`, { method: 'POST' });
+      })
+      .then(res => {
+        if (!res.ok) throw new Error("Simulation failed");
+        return res.json();
+      })
+      .then(data => {
+        setBlastRadius(data.blast_radius);
+        setWorkflowState('DISRUPTION');
+      })
+      .catch(err => {
+        console.error(err);
+        alert(err.message);
+      })
+      .finally(() => setIsProcessing(false));
   };
 
   const runSandbox = () => {
@@ -301,25 +311,30 @@ function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ disruption_id: currentDisruptionId, objective_profile: profile, horizon_minutes: 30 })
     })
-    .then(res => {
-      if (!res.ok) throw new Error("Sandbox generation failed");
-      return res.json();
-    })
-    .then(data => {
-      setSandboxResult(data);
-      setSelectedCandidate(null);
-      setWorkflowState('SANDBOX');
-    })
-    .catch(err => {
-      console.error(err);
-      alert(err.message);
-    })
-    .finally(() => setIsProcessing(false));
+      .then(res => {
+        if (!res.ok) throw new Error("Sandbox generation failed");
+        return res.json();
+      })
+      .then(data => {
+        setSandboxResult(data);
+        const feasibleCandidates = data.candidates?.filter((c: any) => c.feasibility_status === 'FEASIBLE') || [];
+        if (feasibleCandidates.length > 0) {
+          setSelectedCandidate(feasibleCandidates[0]);
+        } else {
+          setSelectedCandidate(null);
+        }
+        setWorkflowState('SANDBOX');
+      })
+      .catch(err => {
+        console.error(err);
+        alert(err.message);
+      })
+      .finally(() => setIsProcessing(false));
   };
 
   const approveIntervention = () => {
     if (!selectedCandidate) return;
-    
+
     const age = (new Date().getTime() - new Date(sandboxResult.generated_at).getTime()) / 1000;
     if (age > 300) {
       alert("This simulation is stale because the live network changed. Recalculate before dispatch.");
@@ -328,25 +343,25 @@ function App() {
     }
 
     if (!window.confirm(`Approve and dispatch ${selectedCandidate.type.replace(/_/g, ' ')}?`)) return;
-    
+
     setIsProcessing(true);
     fetch(`/api/v1/sandbox/${selectedCandidate.id}/approve/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ scenario_id: sandboxResult.scenario_id })
     })
-    .then(res => {
-      if (!res.ok) throw new Error("Approval failed");
-      return res.json();
-    })
-    .then(data => {
-      if (data.error) alert(data.error);
-    })
-    .catch(err => {
-      console.error(err);
-      alert(err.message);
-    })
-    .finally(() => setIsProcessing(false));
+      .then(res => {
+        if (!res.ok) throw new Error("Approval failed");
+        return res.json();
+      })
+      .then(data => {
+        if (data.error) alert(data.error);
+      })
+      .catch(err => {
+        console.error(err);
+        alert(err.message);
+      })
+      .finally(() => setIsProcessing(false));
   };
 
   const edgesGeoJSON = {
@@ -354,7 +369,7 @@ function App() {
     features: edges.map(edge => {
       let color = '#94a3b8'; // Default slate
       let width = 2;
-      
+
       // Calculate traffic congestion color
       if (edge.free_flow_speed > 0 && edge.current_traffic_speed >= 0) {
         const ratio = edge.current_traffic_speed / edge.free_flow_speed;
@@ -386,6 +401,44 @@ function App() {
     })
   };
 
+  if (currentPage === 'LANDING') {
+    return (
+      <LandingPage
+        onEnterNavigator={() => setCurrentPage('NAVIGATOR')}
+        onEnterCommandCenter={() => setCurrentPage('COMMAND_CENTER')}
+        onEnterPredictions={() => setCurrentPage('PREDICTIONS')}
+        onEnterRerouting={() => setCurrentPage('REROUTING')}
+      />
+    );
+  }
+
+  if (currentPage === 'PREDICTIONS') {
+    return (
+      <PredictionsDashboard
+        onNavigate={(page) => setCurrentPage(page)}
+      />
+    );
+  }
+
+  if (currentPage === 'REROUTING') {
+    return (
+      <ReroutingDashboard
+        onNavigate={(page) => setCurrentPage(page)}
+      />
+    );
+  }
+
+  if (currentPage === 'NAVIGATOR') {
+    return (
+      <SmartBusNavigator
+        onEnterCommandCenter={() => setCurrentPage('COMMAND_CENTER')}
+        onEnterLanding={() => setCurrentPage('LANDING')}
+        onEnterPredictions={() => setCurrentPage('PREDICTIONS')}
+        onEnterRerouting={() => setCurrentPage('REROUTING')}
+      />
+    );
+  }
+
   return (
     <div className="w-screen h-screen flex flex-col font-sans bg-zinc-950 overflow-hidden text-zinc-100">
       {connectionError && (
@@ -400,17 +453,48 @@ function App() {
       )}
       <header className="absolute top-0 left-0 right-0 bg-zinc-950/80 backdrop-blur-md text-white p-3 flex justify-between items-center z-20 border-b border-zinc-800 shadow-lg">
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => setCurrentPage('LANDING')}
+            className="flex items-center gap-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2.5 py-1.5 rounded-lg text-xs font-bold border border-zinc-700 transition-all cursor-pointer"
+            title="Return to Home Landing"
+          >
+            <span>🏠</span>
+            <span>Home</span>
+          </button>
+          <button
+            onClick={() => setCurrentPage('NAVIGATOR')}
+            className="flex items-center gap-1.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-md shadow-cyan-600/30 border border-cyan-400/40 transition-all cursor-pointer"
+            title="Return to Smart Bus Hurdle-Free Navigator"
+          >
+            <span>←</span>
+            <span>Bus Navigator</span>
+          </button>
+          <button
+            onClick={() => setCurrentPage('PREDICTIONS')}
+            className="flex items-center gap-1.5 bg-primary-container hover:bg-primary-fixed text-on-primary-container px-3 py-1.5 rounded-lg text-xs font-bold shadow-md shadow-blue-500/20 border border-secondary transition-all cursor-pointer"
+            title="Open Predictions Dashboard"
+          >
+            <span>📊</span>
+            <span>Predictions</span>
+          </button>
+          <button
+            onClick={() => setCurrentPage('REROUTING')}
+            className="flex items-center gap-1.5 bg-emerald-950/80 hover:bg-emerald-900/80 text-emerald-400 px-3 py-1.5 rounded-lg text-xs font-bold shadow-md shadow-emerald-500/20 border border-emerald-500/40 transition-all cursor-pointer"
+            title="Open Rerouting Sandbox"
+          >
+            <span>🔀</span>
+            <span>Rerouting Sandbox</span>
+          </button>
           <h1 className="text-xl font-bold tracking-wider font-sans text-zinc-100">TRANSIT TWIN COMMAND CENTER</h1>
           {twinStatus && (
-            <div className={`px-3 py-1 rounded text-xs font-bold tracking-wider border flex items-center gap-2 ${
-              twinStatus.mode === 'LIVE' ? 'bg-emerald-900/30 text-emerald-400 border-emerald-800' :
+            <div className={`px-3 py-1 rounded text-xs font-bold tracking-wider border flex items-center gap-2 ${twinStatus.mode === 'LIVE' ? 'bg-emerald-900/30 text-emerald-400 border-emerald-800' :
               twinStatus.mode === 'HYBRID' ? 'bg-yellow-900/30 text-yellow-400 border-yellow-800' :
-              'bg-cyan-900/30 text-cyan-400 border-cyan-800'
-            }`}>
+                'bg-cyan-900/30 text-cyan-400 border-cyan-800'
+              }`}>
               <span className={`w-2 h-2 rounded-full shadow-lg ${twinStatus.mode === 'LIVE' ? 'bg-emerald-400 animate-pulse shadow-emerald-400/50' : twinStatus.mode === 'HYBRID' ? 'bg-yellow-400 shadow-yellow-400/50' : 'bg-cyan-400 shadow-cyan-400/50'}`}></span>
               {twinStatus.mode === 'LIVE' ? 'LIVE (REAL DATA ONLY)' :
-               twinStatus.mode === 'HYBRID' ? 'HYBRID (REAL TRAFFIC + SIM FLEET)' :
-               'SIMULATION (FULL SIMULATION)'}
+                twinStatus.mode === 'HYBRID' ? 'HYBRID (REAL TRAFFIC + SIM FLEET)' :
+                  'SIMULATION (FULL SIMULATION)'}
             </div>
           )}
         </div>
@@ -429,9 +513,9 @@ function App() {
       <div className="flex-1 relative w-full h-full">
         {/* Full Bleed Map */}
         <div className="absolute inset-0 z-0">
-          <Map 
-            initialViewState={{ longitude: 85.83, latitude: 20.29, zoom: 13 }} 
-            mapStyle={MAP_STYLE} 
+          <Map
+            initialViewState={{ longitude: 85.83, latitude: 20.29, zoom: 13 }}
+            mapStyle={MAP_STYLE}
             style={{ width: '100%', height: '100%' }}
             interactiveLayerIds={['edges-layer']}
             onClick={(e) => {
@@ -454,7 +538,21 @@ function App() {
                 <Layer id="edges-layer" type="line" paint={{ 'line-color': ['get', 'color'], 'line-width': ['get', 'width'] }} />
               </Source>
             )}
-            
+
+            {selectedCandidate?.route && selectedCandidate.route.length > 0 && (
+              <Source id="reroute" type="geojson" data={{
+                type: 'Feature',
+                properties: {},
+                geometry: { type: 'LineString', coordinates: selectedCandidate.route }
+              } as any}>
+                <Layer id="reroute-layer" type="line" paint={{
+                  'line-color': '#f97316',
+                  'line-width': 6,
+                  'line-dasharray': [2, 1]
+                }} />
+              </Source>
+            )}
+
             {activeDisruptions.filter(d => d.source === 'EXTERNAL').map(disruption => {
               const edge = edges.find(e => e.id.toString() === disruption.affected_entity_id);
               if (!edge || !edge.geometry || edge.geometry.length === 0) return null;
@@ -505,12 +603,12 @@ function App() {
               const ageMs = vehicle.last_updated_at ? (new Date().getTime() - new Date(vehicle.last_updated_at).getTime()) : 0;
               const isStale = ageMs > 60000;
               const isOffline = ageMs > 900000; // 15 minutes
-              
+
               if (isOffline) return null; // Cull offline vehicles
-              
+
               const bgClass = isStale ? 'bg-zinc-500 shadow-none' : (isSim ? 'bg-cyan-950 border-dashed border-cyan-500 text-cyan-200' : 'bg-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.8)] text-zinc-900');
               const badgeText = isSim ? 'SIM' : 'REAL';
-              
+
               return (
                 <Marker key={vehicle.vehicle_id} longitude={vehicle.lon} latitude={vehicle.lat} onClick={(e) => {
                   e.originalEvent.stopPropagation();
@@ -535,16 +633,16 @@ function App() {
           )}
 
           {health.backend === 'OFFLINE' && (
-             <div className="absolute inset-0 z-20 flex items-center justify-center bg-zinc-950/80 backdrop-blur-sm">
-               <div className="bg-rose-950/90 border border-rose-900 text-white px-8 py-6 rounded-xl shadow-2xl text-center max-w-md">
-                 <h2 className="text-xl font-bold mb-2">SYSTEM OFFLINE</h2>
-                 <p className="text-sm text-rose-200 mb-4">Command Center cannot establish a connection to the primary API gateway. Please ensure backend services are running.</p>
-                 <div className="w-8 h-8 rounded-full border-4 border-rose-500 border-t-transparent animate-spin mx-auto"></div>
-               </div>
-             </div>
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-zinc-950/80 backdrop-blur-sm">
+              <div className="bg-rose-950/90 border border-rose-900 text-white px-8 py-6 rounded-xl shadow-2xl text-center max-w-md">
+                <h2 className="text-xl font-bold mb-2">SYSTEM OFFLINE</h2>
+                <p className="text-sm text-rose-200 mb-4">Command Center cannot establish a connection to the primary API gateway. Please ensure backend services are running.</p>
+                <div className="w-8 h-8 rounded-full border-4 border-rose-500 border-t-transparent animate-spin mx-auto"></div>
+              </div>
+            </div>
           )}
         </div>
-        
+
         {/* Telemetry HUD (Left) */}
         <div className="absolute top-20 left-4 z-10 flex flex-col gap-3">
           <div className="bg-zinc-950/80 backdrop-blur-md border border-zinc-800 p-4 rounded-xl shadow-2xl w-48 font-mono">
@@ -573,14 +671,14 @@ function App() {
               SYSTEM ONLINE
             </h2>
             <h1 className="font-black text-zinc-100 tracking-wide text-lg font-sans uppercase">TRANSIT COMMAND CENTER</h1>
-            
+
             <div className="flex text-[10px] font-bold mt-4 gap-4 text-zinc-500 uppercase tracking-widest font-mono">
               <div className={`pb-1 transition-colors ${workflowState === 'NORMAL' || workflowState === 'WARNING' ? 'border-b-2 border-cyan-500 text-cyan-400' : 'border-transparent'}`}>MONITORING</div>
               <div className={`pb-1 transition-colors ${workflowState === 'DISRUPTION' ? 'border-b-2 border-rose-500 text-rose-400' : 'border-transparent'}`}>IMPACT ANALYSIS</div>
               <div className={`pb-1 transition-colors ${workflowState === 'SANDBOX' || workflowState === 'APPROVE' ? 'border-b-2 border-indigo-500 text-indigo-400' : 'border-transparent'}`}>PRE-ACTION</div>
             </div>
           </div>
-          
+
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {(workflowState === 'NORMAL' || workflowState === 'WARNING') && (
               <div className="space-y-4">
@@ -591,11 +689,11 @@ function App() {
                   <div className="flex items-center gap-2 text-emerald-400"><span className="text-emerald-500">●</span> TELEMETRY STREAM ACTIVE</div>
                   <div className="flex items-center gap-2 text-emerald-400"><span className="text-emerald-500">●</span> PREDICTION ENGINE ACTIVE</div>
                   <div className="flex items-center gap-2 text-emerald-400"><span className="text-emerald-500">●</span> SIMULATION ENGINE READY</div>
-                  
+
                   {twinStatus && twinStatus.providers && (
                     <div className="pt-2 mt-2 border-t border-zinc-800 space-y-1">
                       <div className="text-zinc-500 text-[10px] mb-2 uppercase tracking-widest">DATA PROVIDERS</div>
-                      
+
                       <div className="flex justify-between items-center text-[10px] uppercase font-mono">
                         <span className="text-zinc-400">TomTom Traffic</span>
                         <div className="flex items-center gap-2">
@@ -603,7 +701,7 @@ function App() {
                           <span className={`font-bold ${twinStatus.providers.tomtom.status === 'ONLINE' ? 'text-emerald-400' : twinStatus.providers.tomtom.status === 'STALE' ? 'text-amber-400 animate-pulse' : 'text-zinc-500'}`}>{twinStatus.providers.tomtom.status}</span>
                         </div>
                       </div>
-                      
+
                       <div className="flex justify-between items-center text-[10px] uppercase font-mono">
                         <span className="text-zinc-400">TomTom Incidents</span>
                         <div className="flex items-center gap-2">
@@ -641,8 +739,8 @@ function App() {
                   <div className="space-y-3 pb-4">
                     <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Early Warning</h3>
                     {warnings.map((w, idx) => (
-                      <div 
-                        key={idx} 
+                      <div
+                        key={idx}
                         className={`p-3 rounded bg-zinc-900 border-l-4 cursor-pointer transition-all hover:bg-zinc-800 ${w.severity === 'CRITICAL' ? 'border-rose-500 shadow-[inset_4px_0_0_rgba(244,63,94,1)]' : 'border-amber-500 shadow-[inset_4px_0_0_rgba(245,158,11,1)]'}`}
                         onClick={() => {
                           setSelectedStop(stops.find(s => s.id === w.stop_id));
@@ -687,7 +785,7 @@ function App() {
                         <div className="font-black text-xl text-zinc-100 mb-1">{selectedStop.name}</div>
                         <div className="text-sm font-mono text-zinc-500 mb-3">STOP {selectedStop.id}</div>
                         <div className="flex justify-between items-center text-xs font-mono bg-zinc-950 p-3 rounded border border-zinc-800/50">
-                          <div className="text-zinc-500 flex flex-col justify-center">QUEUE<br/>XX / CAPACITY</div>
+                          <div className="text-zinc-500 flex flex-col justify-center">QUEUE<br />XX / CAPACITY</div>
                           <div className="text-right text-lg text-zinc-200">
                             <span className="font-bold">{selectedStop.queue_count || 0}</span> / {selectedStop.capacity}
                           </div>
@@ -720,9 +818,9 @@ function App() {
 
                     <div className="mt-6">
                       <h4 className="text-[10px] font-mono font-bold text-zinc-500 mb-2 uppercase tracking-widest">CREATE DISRUPTION</h4>
-                      <select 
-                        className="w-full bg-zinc-950 border border-zinc-800 text-zinc-200 p-2 rounded text-sm mb-3 font-bold focus:ring-1 focus:ring-cyan-500 outline-none" 
-                        value={disruptionType} 
+                      <select
+                        className="w-full bg-zinc-950 border border-zinc-800 text-zinc-200 p-2 rounded text-sm mb-3 font-bold focus:ring-1 focus:ring-cyan-500 outline-none"
+                        value={disruptionType}
                         onChange={e => setDisruptionType(e.target.value)}
                       >
                         {selectedEdge && <option value="ROAD_BLOCK">ROAD BLOCK</option>}
@@ -730,22 +828,22 @@ function App() {
                         {selectedStop && <option value="CROWD_SURGE">CROWD SURGE</option>}
                         {selectedVehicle && <option value="VEHICLE_BREAKDOWN">VEHICLE BREAKDOWN</option>}
                       </select>
-                      
+
                       <div className="flex gap-2 mb-4">
                         <div className="flex-1">
                           <label className="block text-[10px] font-mono text-zinc-500 mb-1 uppercase">DURATION (MIN)</label>
-                          <input 
-                            type="number" 
-                            className="w-full bg-zinc-950 border border-zinc-800 text-zinc-200 p-2 rounded text-sm focus:ring-1 focus:ring-cyan-500 outline-none" 
-                            value={disruptionDuration} 
-                            onChange={e => setDisruptionDuration(Number(e.target.value))} 
+                          <input
+                            type="number"
+                            className="w-full bg-zinc-950 border border-zinc-800 text-zinc-200 p-2 rounded text-sm focus:ring-1 focus:ring-cyan-500 outline-none"
+                            value={disruptionDuration}
+                            onChange={e => setDisruptionDuration(Number(e.target.value))}
                           />
                         </div>
                       </div>
 
-                      <button 
-                        onClick={triggerDisruption} 
-                        disabled={isProcessing} 
+                      <button
+                        onClick={triggerDisruption}
+                        disabled={isProcessing}
                         className="w-full bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold font-mono tracking-wider py-3 rounded transition-colors shadow-[0_0_15px_rgba(225,29,72,0.3)] disabled:opacity-50"
                       >
                         {isProcessing ? 'SIMULATING...' : `SIMULATE DISRUPTION`}
@@ -766,7 +864,7 @@ function App() {
                   <div className="font-black text-2xl text-zinc-100 uppercase mb-2">{disruptionType.replace(/_/g, ' ')}</div>
                   <div className="grid grid-cols-2 gap-2 text-xs font-mono bg-zinc-950/50 p-2 rounded border border-rose-900/30">
                     <div className="text-zinc-500">TARGET</div>
-                    <div className="text-zinc-200 text-right">{currentDisruptionId ? blastRadius.causal_graph.find((n:any)=>n.depth===1)?.entity || 'Unknown' : 'Unknown'}</div>
+                    <div className="text-zinc-200 text-right">{currentDisruptionId ? blastRadius.causal_graph.find((n: any) => n.depth === 1)?.entity || 'Unknown' : 'Unknown'}</div>
                     <div className="text-zinc-500">DURATION</div>
                     <div className="text-zinc-200 text-right">{disruptionDuration} MIN</div>
                   </div>
@@ -778,13 +876,13 @@ function App() {
                     <span>Baseline</span>
                     <span>Disrupted</span>
                   </div>
-                  
+
                   <div className="space-y-2 font-mono text-sm">
                     <div className="flex items-center justify-between bg-zinc-950 p-2 rounded border border-zinc-800/50">
                       <span className="text-zinc-400 text-[10px] uppercase">PASSENGER DELAY</span>
                       <div className="flex items-center gap-3">
-                        <span className="text-zinc-500">{(blastRadius.baseline_metrics.total_waiting_seconds/60).toFixed(0)}</span>
-                        <span className="text-rose-500 font-bold text-xs">+{((blastRadius.disrupted_metrics.total_waiting_seconds - blastRadius.baseline_metrics.total_waiting_seconds)/60).toFixed(0)}m</span>
+                        <span className="text-zinc-500">{(blastRadius.baseline_metrics.total_waiting_seconds / 60).toFixed(0)}</span>
+                        <span className="text-rose-500 font-bold text-xs">+{((blastRadius.disrupted_metrics.total_waiting_seconds - blastRadius.baseline_metrics.total_waiting_seconds) / 60).toFixed(0)}m</span>
                       </div>
                     </div>
                     <div className="flex items-center justify-between bg-zinc-950 p-2 rounded border border-zinc-800/50">
@@ -824,9 +922,9 @@ function App() {
 
                 <div className="bg-zinc-900 border border-zinc-800 p-3 rounded">
                   <label className="block text-[10px] font-bold font-mono text-zinc-500 uppercase mb-2">OBJECTIVE PROFILE</label>
-                  <select 
-                    className="w-full bg-zinc-950 border border-zinc-800 text-indigo-300 p-2 rounded text-sm font-bold focus:ring-1 focus:ring-indigo-500 outline-none" 
-                    value={profile} 
+                  <select
+                    className="w-full bg-zinc-950 border border-zinc-800 text-indigo-300 p-2 rounded text-sm font-bold focus:ring-1 focus:ring-indigo-500 outline-none"
+                    value={profile}
                     onChange={e => setProfile(e.target.value)}
                   >
                     <option value="SAFETY_FIRST">SAFETY FIRST (Min Crowding)</option>
@@ -835,31 +933,36 @@ function App() {
                     <option value="BALANCED">BALANCED</option>
                   </select>
                   <button onClick={runSandbox} disabled={isProcessing} className="w-full mt-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[10px] font-mono font-bold py-2 rounded transition-colors border border-zinc-700 tracking-widest">
-                    RECALCULATE
+                    {isProcessing ? 'EVALUATING ROUTES...' : 'RECALCULATE'}
                   </button>
                 </div>
 
                 <div className="space-y-3">
+                  {sandboxResult.candidates.filter((c: any) => c.feasibility_status === 'FEASIBLE').length === 0 && (
+                    <div className="text-rose-500 text-[10px] font-mono text-center p-3 bg-rose-950/20 border border-rose-900/50 rounded tracking-widest">
+                      NO FEASIBLE REROUTE
+                    </div>
+                  )}
                   {sandboxResult.candidates.map((cand: any) => (
-                    <div 
-                      key={cand.id} 
+                    <div
+                      key={cand.id}
                       className={`border rounded overflow-hidden cursor-pointer transition-all ${cand.feasibility_status === 'INFEASIBLE' ? 'opacity-40 grayscale' : ''} ${selectedCandidate?.id === cand.id ? 'border-indigo-500 bg-indigo-950/20 shadow-[0_0_15px_rgba(79,70,229,0.15)]' : 'bg-zinc-900 border-zinc-800 hover:border-zinc-600'}`}
                       onClick={() => cand.feasibility_status === 'FEASIBLE' && setSelectedCandidate(cand)}
                     >
                       <div className={`p-3 border-b flex justify-between items-center ${selectedCandidate?.id === cand.id ? 'border-indigo-900 bg-indigo-900/20' : 'border-zinc-800 bg-zinc-950/50'}`}>
                         <div className="flex gap-3 items-center">
-                           <span className="font-bold font-mono text-xs text-zinc-500">#{cand.rank}</span>
-                           <span className="font-bold text-sm text-zinc-200">{cand.type.replace(/_/g, ' ')}</span>
+                          <span className="font-bold font-mono text-xs text-zinc-500">#{cand.rank}</span>
+                          <span className="font-bold text-sm text-zinc-200">{cand.type.replace(/_/g, ' ')}</span>
                         </div>
                         {cand.rank === 1 && <span className="text-[9px] font-bold text-emerald-400 bg-emerald-950/50 px-2 py-0.5 rounded border border-emerald-900 tracking-wider">RECOMMENDED</span>}
                       </div>
-                      
+
                       <div className="p-3">
                         <div className="flex justify-between items-center mb-3">
                           <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded tracking-wider ${cand.feasibility_status === 'FEASIBLE' ? 'bg-emerald-950 text-emerald-400' : 'bg-rose-950 text-rose-400'}`}>{cand.feasibility_status}</span>
                           <span className="text-xs font-mono text-zinc-400">SCORE: {(cand.score * 100).toFixed(0)}</span>
                         </div>
-                        
+
                         {cand.feasibility_status === 'FEASIBLE' ? (
                           <div className="grid grid-cols-2 gap-2 text-xs font-mono">
                             <div className="bg-zinc-950 p-2 rounded border border-zinc-800/50">
@@ -887,13 +990,13 @@ function App() {
                   <div className="mt-6 animate-fade-in border border-zinc-800 bg-zinc-900 rounded p-4">
                     <h4 className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest mb-2 border-b border-zinc-800 pb-2">WHY THIS OPTION</h4>
                     <p className="text-sm text-zinc-300 font-sans mb-4 mt-3">{selectedCandidate.explanation}</p>
-                    
+
                     <div className="bg-rose-950/20 border border-rose-900/30 p-2 rounded mb-4 text-center">
                       <span className="text-[10px] font-mono text-rose-400/80 uppercase">Simulation state is isolated from live operations.</span>
                     </div>
 
-                    <button 
-                      onClick={approveIntervention} 
+                    <button
+                      onClick={approveIntervention}
                       disabled={isProcessing}
                       className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold font-mono tracking-wider py-3 rounded transition-all text-xs shadow-[0_0_15px_rgba(5,150,105,0.3)] disabled:opacity-50"
                     >
@@ -914,7 +1017,7 @@ function App() {
                     <p>AUDIT LOGGED</p>
                   </div>
                 </div>
-                
+
                 <div className="text-center mt-8">
                   <button onClick={triggerDemoReset} className="text-cyan-500 hover:text-cyan-400 hover:bg-cyan-950/50 text-[10px] font-mono uppercase tracking-widest border border-cyan-900/50 bg-cyan-950/30 px-4 py-2 rounded transition-colors">
                     ACKNOWLEDGE & RESET
@@ -925,6 +1028,9 @@ function App() {
           </div>
         </aside>
       </div>
+
+      {/* Emergency SOS Button — always visible on Command Center */}
+      <EmergencySOS />
     </div>
   );
 }

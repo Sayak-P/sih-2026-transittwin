@@ -40,6 +40,11 @@ class SandboxGenerateView(APIView):
         result = PreActionSandbox.run_sandbox(scenario_id, disruption, config, profile_name)
         SANDBOX_RESULTS_DB[scenario_id] = result
         
+        # LOGGING FOR DEBUGGING
+        print(f"SANDBOX RETURNED {len(result.candidates)} CANDIDATES:")
+        for c in result.candidates:
+            print(f" - {c.type}: {c.feasibility_status}")
+            
         # Notify clients (Phase 7 WebSocket requirement)
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(

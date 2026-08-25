@@ -18,6 +18,7 @@ class InterventionCandidate:
     generated_at: datetime = field(default_factory=datetime.now)
     feasibility_status: str = "FEASIBLE" # FEASIBLE, INFEASIBLE
     constraint_violations: List[str] = field(default_factory=list)
+    route: List[List[float]] = field(default_factory=list)
     
     # Set after simulation/scoring
     score: float = 0.0
