@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 
 interface PredictionsDashboardProps {
-  onNavigate: (page: 'LANDING' | 'NAVIGATOR' | 'COMMAND_CENTER' | 'PREDICTIONS' | 'REROUTING') => void;
+  onNavigate: (page: 'LANDING' | 'NAVIGATOR' | 'COMMAND_CENTER' | 'PREDICTIONS' | 'REROUTING' | 'INTERVENTIONS') => void;
 }
 
 interface StationAlert {
@@ -26,6 +26,9 @@ interface StationAlert {
   departingStatus: string;
   departingRatio: number;
   delayed_buses_count?: number;
+  forecast?: Array<{ horizon_minutes: number; predicted_crowd: number; crowding_ratio: number; severity: string }>;
+  contributing_factors?: any;
+  recommended_action?: any;
 }
 
 const DEFAULT_STATIONS: StationAlert[] = [
@@ -208,6 +211,15 @@ export default function PredictionsDashboard({ onNavigate }: PredictionsDashboar
             title="Rerouting Sandbox"
           >
             <span className="material-symbols-outlined text-[26px]">alt_route</span>
+          </button>
+
+          {/* Intervention & Schedule Simulator */}
+          <button
+            onClick={() => onNavigate('INTERVENTIONS')}
+            className="w-13 h-13 flex flex-col items-center justify-center text-indigo-400 hover:text-indigo-200 hover:bg-indigo-950/50 transition-all rounded-2xl cursor-pointer border-none bg-transparent p-3"
+            title="Intervention & Schedule Simulator"
+          >
+            <span className="material-symbols-outlined text-[26px]">science</span>
           </button>
         </div>
 
@@ -556,52 +568,84 @@ export default function PredictionsDashboard({ onNavigate }: PredictionsDashboar
                 </div>
               </div>
 
-              {/* Progress Gauges Grid */}
-              <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-4 w-full">
-                {/* Incoming Passengers Flow */}
-                <div className="bg-surface-container-highest p-4 rounded-2xl border border-outline-variant/10">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs text-on-surface flex items-center gap-1.5 font-medium">
-                      <span className="material-symbols-outlined text-warning-tonal text-base">login</span>
-                      Incoming Passengers (λ · E_event · Δt)
-                    </span>
-                    <span className="text-[11px] font-mono text-warning-tonal font-medium">
-                      {selectedStation.incomingStatus}
-                    </span>
+              {/* Progress Gauges & Multi-Horizon Forecast Grid */}
+              <div className="flex-1 flex flex-col gap-4 w-full">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Incoming Passengers Flow */}
+                  <div className="bg-surface-container-highest p-4 rounded-2xl border border-outline-variant/10">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-xs text-on-surface flex items-center gap-1.5 font-medium">
+                        <span className="material-symbols-outlined text-warning-tonal text-base">login</span>
+                        Incoming Passengers (λ · E_event · Δt)
+                      </span>
+                      <span className="text-[11px] font-mono text-warning-tonal font-medium">
+                        {selectedStation.incomingStatus}
+                      </span>
+                    </div>
+                    <div className="w-full bg-surface-dim rounded-full h-2.5 mb-1.5 overflow-hidden">
+                      <div
+                        className="bg-warning-tonal h-full rounded-full transition-all duration-500"
+                        style={{ width: `${selectedStation.incomingRatio}%` }}
+                      ></div>
+                    </div>
+                    <div className="flex justify-between items-center font-mono text-[10px] text-on-surface-variant">
+                      <span>Rate: {((selectedStation.lambda_base || 18.0) * (selectedStation.e_event || 3.56)).toFixed(1)} pax/min</span>
+                      <span>+{selectedStation.incomingPax} expected</span>
+                    </div>
                   </div>
-                  <div className="w-full bg-surface-dim rounded-full h-2.5 mb-1.5 overflow-hidden">
-                    <div
-                      className="bg-warning-tonal h-full rounded-full transition-all duration-500"
-                      style={{ width: `${selectedStation.incomingRatio}%` }}
-                    ></div>
-                  </div>
-                  <div className="flex justify-between items-center font-mono text-[10px] text-on-surface-variant">
-                    <span>Rate: {((selectedStation.lambda_base || 18.0) * (selectedStation.e_event || 3.56)).toFixed(1)} pax/min</span>
-                    <span>+{selectedStation.incomingPax} expected</span>
+
+                  {/* Departing Passengers Flow */}
+                  <div className="bg-surface-container-highest p-4 rounded-2xl border border-outline-variant/10">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-xs text-on-surface flex items-center gap-1.5 font-medium">
+                        <span className="material-symbols-outlined text-success-tonal text-base">logout</span>
+                        Departing Passengers (μ · Δt)
+                      </span>
+                      <span className={`text-[11px] font-mono font-medium ${selectedStation.mu_boarding === 0 ? 'text-error' : 'text-success-tonal'}`}>
+                        {selectedStation.departingStatus}
+                      </span>
+                    </div>
+                    <div className="w-full bg-surface-dim rounded-full h-2.5 mb-1.5 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${selectedStation.mu_boarding === 0 ? 'bg-error' : 'bg-success-tonal'}`}
+                        style={{ width: `${Math.max(5, selectedStation.departingRatio)}%` }}
+                      ></div>
+                    </div>
+                    <div className="flex justify-between items-center font-mono text-[10px] text-on-surface-variant">
+                      <span>{selectedStation.mu_boarding === 0 ? 'μ = 0 (Bus Delayed / Incident)' : `Rate: ${selectedStation.mu_boarding} pax/min`}</span>
+                      <span>-{selectedStation.departingPax} expected</span>
+                    </div>
                   </div>
                 </div>
 
-                {/* Departing Passengers Flow */}
-                <div className="bg-surface-container-highest p-4 rounded-2xl border border-outline-variant/10">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-xs text-on-surface flex items-center gap-1.5 font-medium">
-                      <span className="material-symbols-outlined text-success-tonal text-base">logout</span>
-                      Departing Passengers (μ · Δt)
-                    </span>
-                    <span className={`text-[11px] font-mono font-medium ${selectedStation.mu_boarding === 0 ? 'text-error' : 'text-success-tonal'}`}>
-                      {selectedStation.departingStatus}
-                    </span>
+                {/* Multi-Horizon Forecast Stepper + Test Intervention Action */}
+                <div className="bg-surface-container-highest/80 p-3.5 rounded-2xl border border-outline-variant/15 flex flex-col md:flex-row justify-between items-center gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-mono text-zinc-400 font-bold uppercase tracking-wider">Multi-Horizon Forecast:</span>
+                    <div className="flex gap-2">
+                      {(selectedStation.forecast && selectedStation.forecast.length > 0 ? selectedStation.forecast : [
+                        { horizon_minutes: 15, predicted_crowd: selectedStation.predicted_crowd_15m || selectedStation.current_queue || 45, severity: selectedStation.severity },
+                        { horizon_minutes: 30, predicted_crowd: Math.round((selectedStation.predicted_crowd_15m || 50) * 1.3), severity: selectedStation.severity },
+                        { horizon_minutes: 45, predicted_crowd: Math.round((selectedStation.predicted_crowd_15m || 50) * 1.6), severity: selectedStation.severity },
+                        { horizon_minutes: 60, predicted_crowd: selectedStation.predicted_crowd_60m || 90, severity: selectedStation.severity },
+                      ]).map((h: any) => (
+                        <div key={h.horizon_minutes} className="bg-surface-dim px-2.5 py-1 rounded-lg border border-outline-variant/10 text-center">
+                          <div className="text-[9px] text-zinc-400 font-mono">+{h.horizon_minutes}m</div>
+                          <div className={`text-xs font-bold font-mono ${h.severity === 'CRITICAL' ? 'text-error' : h.severity === 'WARNING' ? 'text-warning-tonal' : 'text-success-tonal'}`}>
+                            {h.predicted_crowd} pax
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="w-full bg-surface-dim rounded-full h-2.5 mb-1.5 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-500 ${selectedStation.mu_boarding === 0 ? 'bg-error' : 'bg-success-tonal'}`}
-                      style={{ width: `${Math.max(5, selectedStation.departingRatio)}%` }}
-                    ></div>
-                  </div>
-                  <div className="flex justify-between items-center font-mono text-[10px] text-on-surface-variant">
-                    <span>{selectedStation.mu_boarding === 0 ? 'μ = 0 (Bus Delayed / Incident)' : `Rate: ${selectedStation.mu_boarding} pax/min`}</span>
-                    <span>-{selectedStation.departingPax} expected</span>
-                  </div>
+
+                  <button
+                    onClick={() => onNavigate('INTERVENTIONS')}
+                    className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-600/30 flex items-center gap-2 border-none cursor-pointer whitespace-nowrap"
+                  >
+                    <span>🧪</span>
+                    <span>Test Alternate Schedule</span>
+                  </button>
                 </div>
               </div>
             </div>

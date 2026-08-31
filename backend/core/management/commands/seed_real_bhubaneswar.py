@@ -212,16 +212,18 @@ class Command(BaseCommand):
                 if rev_created:
                     total_edges += 1
 
-            # Create vehicles for this route
+            # Create vehicles for this route (staggered along route stops)
             num_vehicles = route_data.get('num_vehicles', 3)
+            num_stops = len(stops_list)
             for v_idx in range(1, num_vehicles + 1):
-                start_stop = stop_registry[stops_list[0]['name']]
+                stop_idx = ((v_idx - 1) * max(1, num_stops // max(1, num_vehicles))) % num_stops
+                assigned_stop = stop_registry[stops_list[stop_idx]['name']]
                 vehicle = Vehicle.objects.create(
                     identifier=f"BUS-R{ref}-{v_idx:02d}",
                     vehicle_type="Mo Bus",
                     route=route,
-                    lat=start_stop.lat,
-                    lon=start_stop.lon,
+                    lat=assigned_stop.lat,
+                    lon=assigned_stop.lon,
                     occupancy=0,
                     capacity=60,
                     accessible_capacity=2,

@@ -16,9 +16,45 @@ def haversine(lat1, lon1, lat2, lon2):
     a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
+import time
+import math
+import hashlib
+
+def interpolate_coords_along_path(coords, fraction):
+    """Interpolate [lon, lat] along a list of coordinates [ [lon, lat], ... ] given progress 0.0-1.0"""
+    if not coords:
+        return [85.83, 20.28]
+    if len(coords) == 1 or fraction <= 0:
+        return coords[0]
+    if fraction >= 1.0:
+        return coords[-1]
+    
+    seg_lens = []
+    total_len = 0.0
+    for i in range(len(coords) - 1):
+        dx = coords[i+1][0] - coords[i][0]
+        dy = coords[i+1][1] - coords[i][1]
+        dist = math.hypot(dx, dy)
+        seg_lens.append(dist)
+        total_len += dist
+    
+    if total_len == 0:
+        return coords[0]
+    
+    target_dist = fraction * total_len
+    cur_dist = 0.0
+    for i in range(len(seg_lens)):
+        if cur_dist + seg_lens[i] >= target_dist:
+            ratio = (target_dist - cur_dist) / max(1e-9, seg_lens[i])
+            lon = coords[i][0] + ratio * (coords[i+1][0] - coords[i][0])
+            lat = coords[i][1] + ratio * (coords[i+1][1] - coords[i][1])
+            return [lon, lat]
+        cur_dist += seg_lens[i]
+    return coords[-1]
+
 class BusListForNavigatorView(APIView):
     """
-    Returns list of all active buses with their current position,
+    Returns list of all buses with their real-time simulated position,
     route, current stop, and estimated next stop for the Smart Route Navigator.
     """
     def get(self, request):
@@ -35,46 +71,117 @@ class BusListForNavigatorView(APIView):
             sim_v_id = f"SIM-{v_id}" if not v_id.startswith("SIM-") else v_id
             live_info = live_vehicles.get(sim_v_id) or live_vehicles.get(v_id) or {}
             
-            cur_lat = live_info.get("lat") or v.lat
-            cur_lon = live_info.get("lon") or v.lon
+            status = live_info.get("status") or v.state or "ACTIVE"
+            is_active = (status == "ACTIVE")
             occupancy = live_info.get("occupancy", v.occupancy)
-            speed_kmh = live_info.get("speed_kmh", 25.0)
-            status = live_info.get("status", v.state)
             
-            # Find Route and stops
+            # Find Route, stops and polyline geometry
             route_name = v.route.name if v.route else "Unassigned"
             route_edges = list(RouteEdge.objects.filter(route=v.route).select_related('edge', 'edge__source', 'edge__target').order_by('sequence_order')) if v.route else []
             
-            # Determine closest stop and next stop
-            closest_stop = None
-            next_stop = None
-            
+            route_stops = []
+            route_geometry_coords = []
             if route_edges:
-                route_stops = []
                 for re in route_edges:
                     if not route_stops or route_stops[-1].id != re.edge.source.id:
                         route_stops.append(re.edge.source)
                     if route_stops[-1].id != re.edge.target.id:
                         route_stops.append(re.edge.target)
-                        
-                if cur_lat and cur_lon and route_stops:
-                    # Find closest stop
-                    min_dist = float('inf')
-                    min_idx = 0
-                    for idx, st in enumerate(route_stops):
-                        d = haversine(cur_lat, cur_lon, st.lat, st.lon)
-                        if d < min_dist:
-                            min_dist = d
-                            min_idx = idx
-                            closest_stop = st
                     
-                    # Next stop is the next stop in sequence
-                    next_idx = (min_idx + 1) % len(route_stops)
-                    next_stop = route_stops[next_idx]
-                elif route_stops:
-                    closest_stop = route_stops[0]
-                    next_stop = route_stops[1] if len(route_stops) > 1 else route_stops[0]
+                    if re.edge.geometry and 'coordinates' in re.edge.geometry:
+                        for pt in re.edge.geometry['coordinates']:
+                            if not route_geometry_coords or route_geometry_coords[-1] != pt:
+                                route_geometry_coords.append(pt)
+                    else:
+                        route_geometry_coords.append([re.edge.source.lon, re.edge.source.lat])
+                        route_geometry_coords.append([re.edge.target.lon, re.edge.target.lat])
+
+            # Calculate real simulated location along the route if active
+            if is_active and route_geometry_coords:
+                v_hash = int(hashlib.md5(v.identifier.encode()).hexdigest(), 16) % 10000
+                now_t = time.time()
+
+                # Calculate real corridor length in meters using haversine
+                total_corridor_m = 0.0
+                for ci in range(len(route_geometry_coords) - 1):
+                    total_corridor_m += haversine(
+                        route_geometry_coords[ci][1], route_geometry_coords[ci][0],
+                        route_geometry_coords[ci+1][1], route_geometry_coords[ci+1][0]
+                    )
+
+                # Base cruising speed: 28-38 km/h (realistic city bus cruising speed)
+                base_speed_kmh = 28.0 + (v_hash % 9)
+                base_speed_ms = base_speed_kmh / 3.6
+                cycle_period_seconds = total_corridor_m / base_speed_ms if base_speed_ms > 0 else 600.0
+
+                progress = ((now_t + v_hash * 7.3) % cycle_period_seconds) / cycle_period_seconds
+                sim_pt = interpolate_coords_along_path(route_geometry_coords, progress)
+                cur_lon = round(sim_pt[0], 6)
+                cur_lat = round(sim_pt[1], 6)
+
+                # Compute heading (bearing) from current pos to next geometry point
+                heading_deg = 0.0
+                look_ahead = min(progress + 0.005, 1.0)
+                next_pt = interpolate_coords_along_path(route_geometry_coords, look_ahead)
+                dlon = math.radians(next_pt[0] - cur_lon)
+                lat1 = math.radians(cur_lat)
+                lat2 = math.radians(next_pt[1])
+                x = math.sin(dlon) * math.cos(lat2)
+                y = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+                heading_deg = round((math.degrees(math.atan2(x, y)) + 360) % 360, 1)
+            else:
+                now_t = time.time()
+                v_hash = 0
+                base_speed_kmh = 0.0
+                cur_lat = live_info.get("lat") or v.lat
+                cur_lon = live_info.get("lon") or v.lon
+                speed_kmh = 0.0
+                heading_deg = 0.0
+
+            # Determine closest stop and next upcoming stop from real coordinates
+            closest_stop = None
+            next_stop = None
+            upcoming_stops = []
             
+            if route_stops and cur_lat and cur_lon:
+                min_dist = float('inf')
+                min_idx = 0
+                for idx, st in enumerate(route_stops):
+                    d = haversine(cur_lat, cur_lon, st.lat, st.lon)
+                    if d < min_dist:
+                        min_dist = d
+                        min_idx = idx
+                        closest_stop = st
+                
+                next_idx = (min_idx + 1) if min_idx + 1 < len(route_stops) else 0
+                next_stop = route_stops[next_idx] if route_stops else None
+                upcoming_stops = route_stops[min_idx + 1:] if min_idx + 1 < len(route_stops) else []
+            elif route_stops:
+                closest_stop = route_stops[0]
+                next_stop = route_stops[1] if len(route_stops) > 1 else route_stops[0]
+                upcoming_stops = route_stops[1:] if len(route_stops) > 1 else []
+            
+            dist_to_next = round(haversine(cur_lat, cur_lon, next_stop.lat, next_stop.lon), 1) if cur_lat and cur_lon and next_stop else None
+
+            # Calculate accurate instantaneous physical velocity v(t)
+            if is_active and cur_lat and cur_lon and closest_stop:
+                dist_to_closest = haversine(cur_lat, cur_lon, closest_stop.lat, closest_stop.lon)
+                if dist_to_closest < 30.0:
+                    # Bus is dwelling / picking up passengers at the bus stop (0 - 4 km/h)
+                    instant_speed = max(0.0, 3.5 * (dist_to_closest / 30.0))
+                elif dist_to_closest < 160.0:
+                    # Bus is accelerating out of stop or decelerating into stop
+                    ratio = (dist_to_closest - 30.0) / 130.0
+                    instant_speed = 4.0 + ratio * (base_speed_kmh - 4.0)
+                else:
+                    # Cruising speed on open street with real-time dynamic traffic fluctuations
+                    traffic_wave = math.sin((now_t + v_hash) / 4.5) * 4.2 + math.cos((now_t * 0.8 + v_hash) / 10.0) * 2.3
+                    instant_speed = base_speed_kmh + traffic_wave
+                
+                speed_kmh = max(0.0, round(instant_speed, 1))
+            elif not is_active:
+                speed_kmh = 0.0
+
             result.append({
                 "identifier": v.identifier,
                 "vehicle_type": v.vehicle_type,
@@ -82,10 +189,13 @@ class BusListForNavigatorView(APIView):
                 "route_name": route_name,
                 "lat": cur_lat,
                 "lon": cur_lon,
-                "speed_kmh": round(speed_kmh, 1),
+                "speed_kmh": speed_kmh,
+                "speed_ms": round(speed_kmh / 3.6, 2),
+                "heading_deg": heading_deg,
                 "occupancy": occupancy,
                 "capacity": v.capacity,
                 "status": status,
+                "distance_to_next_stop_m": dist_to_next,
                 "current_stop": {
                     "id": closest_stop.id,
                     "name": closest_stop.name,
@@ -97,7 +207,15 @@ class BusListForNavigatorView(APIView):
                     "name": next_stop.name,
                     "lat": next_stop.lat,
                     "lon": next_stop.lon,
-                } if next_stop else None
+                } if next_stop else None,
+                "upcoming_stops": [
+                    {"id": s.id, "name": s.name, "lat": s.lat, "lon": s.lon}
+                    for s in upcoming_stops
+                ],
+                "route_stops": [
+                    {"id": s.id, "name": s.name, "lat": s.lat, "lon": s.lon}
+                    for s in route_stops
+                ]
             })
             
         return Response(result)

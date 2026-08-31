@@ -5,6 +5,7 @@ from django.utils import timezone
 from core.models import Stop, Edge, RouteEdge, Vehicle, Disruption
 from prediction.surge_model import predict_event_surge
 from simulation.state.live_state import LiveStateEngine
+from simulation.events.event_engine import compute_event_surge_at_stop, get_active_events, get_stop_coords_map
 
 class QueueDynamicsEngine:
     """
@@ -144,21 +145,37 @@ class QueueDynamicsEngine:
         total_predictions_count = 0
         total_network_load = 0.0
 
+        # Pre-load event data and stop coordinates for event engine
+        active_events = get_active_events(now)
+        stops_coords = get_stop_coords_map()
+
         for stop in all_stops:
             live_data = live_stops.get(str(stop.id), {})
             current_queue = live_data.get('queue_count', 0)
             capacity = max(10, stop.capacity or 100)
 
-            # Check if there is an active disruption or event near this stop
+            # Check if there is an active disruption near this stop
             stop_disruptions = [d for d in active_disruptions if d.affected_stop_id == stop.id]
-            has_event = any("EVENT" in d.disruption_type.upper() or "CONCERT" in d.disruption_type.upper() for d in stop_disruptions)
             has_delay = any(d.severity in ['HIGH', 'CRITICAL'] for d in stop_disruptions)
 
-            event_size = 2 if has_event else (1 if "CENTRAL" in stop.name.upper() or "PARK" in stop.name.upper() else 0)
+            # A. Compute Event Surge via Event Engine (replaces hardcoded heuristic)
+            event_surge_result = compute_event_surge_at_stop(
+                stop_id=stop.id,
+                stop_lat=stop.lat,
+                stop_lon=stop.lon,
+                current_time=now,
+                events=active_events,
+                stops_coords=stops_coords,
+            )
+            event_surge_multiplier = event_surge_result["total_surge"]
+            contributing_events = event_surge_result["contributing_events"]
+
+            # Derive ML features from event engine results
+            event_size = min(3, event_surge_result["event_count"])
             congestion_pct = 75.0 if has_delay else (50.0 if hour_of_day in [8, 9, 17, 18, 19] else 25.0)
 
-            # A. Predict ML Event Surge Multiplier (E_event)
-            e_event = predict_event_surge(
+            # B. Predict ML Event Surge Multiplier (E_event) via trained model
+            e_event_ml = predict_event_surge(
                 hour_of_day=hour_of_day,
                 is_weekend=is_weekend,
                 event_size_nearby=event_size,
@@ -166,52 +183,83 @@ class QueueDynamicsEngine:
                 scheduled_headway_min=15.0
             )
 
-            # B. Baseline Passenger Arrival Rate lambda_base (pax / minute)
+            # Combine ML prediction with event engine surge
+            # Use the maximum of the two signals (prevents underestimation)
+            e_event = max(e_event_ml, event_surge_multiplier)
+
+            # C. Baseline Passenger Arrival Rate lambda_base (pax / minute)
             # Standard time-of-day ticketing arrival rate baseline
             if hour_of_day in [8, 9, 10, 17, 18, 19]:
-                lambda_base = 12.0 # Peak hours: 12 pax/min
+                lambda_base = 12.0  # Peak hours: 12 pax/min
             elif hour_of_day in [11, 12, 13, 14, 15, 16]:
-                lambda_base = 6.0  # Midday: 6 pax/min
+                lambda_base = 6.0   # Midday: 6 pax/min
             else:
-                lambda_base = 2.5  # Off-peak: 2.5 pax/min
+                lambda_base = 2.5   # Off-peak: 2.5 pax/min
 
             # Adjust lambda_base per stop importance
             if "CENTRAL" in stop.name.upper() or "PARK" in stop.name.upper() or "MASTER" in stop.name.upper():
                 lambda_base *= 1.5
 
-            # C. Boarding Throughput mu_boarding (pax / minute)
+            # D. Boarding Throughput mu_boarding (pax / minute)
             # Derived from approaching buses. If buses are delayed/blocked, mu_boarding drops to 0!
             approaching = stop_approaching_buses.get(stop.id, [])
             delayed_buses = [b for b in approaching if b["is_delayed"]]
-            
+
             if approaching:
-                # Sum available clearing capacity divided by headway
                 clearing_cap = sum(b["available_seats"] for b in approaching)
                 mu_boarding = round(clearing_cap / max(10.0, dt_minutes), 2)
             else:
-                # Baseline scheduled bus throughput
                 mu_boarding = 8.0
 
-            if len(delayed_buses) > 0 and len(delayed_buses) == len(approaching):
-                # All approaching buses delayed! mu_boarding = 0, causing automatic crowd spike
+            if has_delay or (len(delayed_buses) > 0 and len(delayed_buses) == len(approaching)):
                 mu_boarding = 0.0
 
-            # D. Dynamic M/M/c Crowd Step Evolution:
+            # E. Dynamic M/M/c Crowd Step Evolution:
             # Crowd(t + dt) = max(0, Crowd(t) + (lambda_base * E_event - mu_boarding) * dt)
             net_arrival_rate = (lambda_base * e_event) - mu_boarding
-            predicted_crowd_dt = max(0, int(round(current_queue + (net_arrival_rate * dt_minutes))))
-            predicted_crowd_60m = max(0, int(round(current_queue + (net_arrival_rate * 60))))
+
+            # Multi-horizon forecast: +15m, +30m, +45m, +60m
+            forecast_horizons = [15, 30, 45, 60]
+            forecast = []
+            for h in forecast_horizons:
+                predicted_crowd_h = max(0, int(round(current_queue + (net_arrival_rate * h))))
+                ratio_h = round(predicted_crowd_h / capacity, 2)
+                forecast.append({
+                    "horizon_minutes": h,
+                    "predicted_crowd": predicted_crowd_h,
+                    "crowding_ratio": ratio_h,
+                    "severity": "CRITICAL" if ratio_h >= 1.0 else ("WARNING" if ratio_h >= 0.75 else "NOMINAL"),
+                })
+
+            predicted_crowd_dt = forecast[0]["predicted_crowd"]  # +15m
+            predicted_crowd_60m = forecast[3]["predicted_crowd"]  # +60m
 
             crowding_ratio = round(predicted_crowd_dt / capacity, 2)
             total_network_load += crowding_ratio
 
-            # E. Severity & Priority Alert Categorization
-            if crowding_ratio >= 1.0 or (has_delay and crowding_ratio >= 0.85):
+            # F. Contributing Factors (explainability)
+            contributing_factors = {
+                "time_of_day": "PEAK" if hour_of_day in [8, 9, 10, 17, 18, 19] else ("MIDDAY" if hour_of_day in range(11, 17) else "OFF_PEAK"),
+                "is_weekend": bool(is_weekend),
+                "event_surge_factor": round(e_event, 2),
+                "event_surge_source": "EVENT_ENGINE" if event_surge_multiplier > e_event_ml else "ML_MODEL",
+                "ml_prediction": round(e_event_ml, 2),
+                "events_nearby": contributing_events,
+                "bus_delay_minutes": max([b["delay_minutes"] for b in delayed_buses], default=0.0),
+                "buses_approaching": len(approaching),
+                "buses_delayed": len(delayed_buses),
+                "all_buses_delayed": len(delayed_buses) > 0 and len(delayed_buses) == len(approaching),
+                "current_headway_minutes": dt_minutes,
+                "passenger_demand_change_pct": round((e_event - 1.0) * 100, 1),
+            }
+
+            # G. Severity & Priority Alert Categorization
+            if crowding_ratio >= 1.0 or any(d.severity == 'CRITICAL' for d in stop_disruptions):
                 severity = "CRITICAL"
                 total_predicted_critical += 1
                 action_text = "Redirect Bus"
                 eta_impact = min([b["eta_minutes"] for b in approaching], default=12)
-            elif crowding_ratio >= 0.75:
+            elif crowding_ratio >= 0.75 or has_delay:
                 severity = "WARNING"
                 action_text = "Increase Frequency"
                 eta_impact = min([b["eta_minutes"] for b in approaching], default=25)
@@ -219,6 +267,11 @@ class QueueDynamicsEngine:
                 severity = "NOMINAL"
                 action_text = "Review Plan"
                 eta_impact = 45
+
+            # H. Recommended Action with reasoning
+            recommended_action = QueueDynamicsEngine._generate_recommendation(
+                severity, contributing_factors, lambda_base, e_event, mu_boarding, crowding_ratio
+            )
 
             total_predictions_count += 1
 
@@ -238,6 +291,9 @@ class QueueDynamicsEngine:
                 "predicted_crowd_15m": predicted_crowd_dt,
                 "predicted_crowd_60m": predicted_crowd_60m,
                 "crowding_ratio": crowding_ratio,
+                "forecast": forecast,
+                "contributing_factors": contributing_factors,
+                "recommended_action": recommended_action,
                 "incomingPax": int(round(lambda_base * e_event * dt_minutes)),
                 "incomingStatus": "High Volume" if e_event > 1.8 or net_arrival_rate > 10 else "Moderate",
                 "incomingRatio": min(100, int(round((lambda_base * e_event * dt_minutes / max(1, capacity)) * 100))),
@@ -259,6 +315,69 @@ class QueueDynamicsEngine:
             "active_predictions_count": max(14, total_predictions_count),
             "critical_alerts_count": max(2, total_predicted_critical),
             "average_network_load_pct": avg_network_load,
+            "active_events_count": len(active_events),
+            "active_events": [e.to_dict() for e in active_events],
             "stations": station_predictions,
-            "vehicle_delays": vehicle_delays
+            "vehicle_delays": vehicle_delays,
+            "model_info": {
+                "surge_model": "RandomForestRegressor (MTA-trained)",
+                "event_engine": "ExponentialDecay",
+                "queue_model": "M/M/c",
+                "data_source": "REAL_DATA + SIMULATED_EVENTS",
+            }
+        }
+
+    @staticmethod
+    def _generate_recommendation(
+        severity: str,
+        factors: dict,
+        lambda_base: float,
+        e_event: float,
+        mu_boarding: float,
+        crowding_ratio: float
+    ) -> dict:
+        """
+        Generates an actionable recommendation with reasoning based on
+        contributing factors.
+        """
+        reasons = []
+        action = "MONITOR"
+        details = ""
+
+        if factors["all_buses_delayed"]:
+            reasons.append(f"All {factors['buses_delayed']} approaching buses are delayed")
+            action = "DISPATCH_ADDITIONAL"
+            details = "Dispatch a spare vehicle or reroute an adjacent bus to restore throughput."
+
+        if factors["event_surge_factor"] > 1.5:
+            events = factors.get("events_nearby", [])
+            event_names = [e["event_name"] for e in events[:3]]
+            reasons.append(f"Event surge ({factors['event_surge_factor']}x): {', '.join(event_names) if event_names else 'elevated demand'}")
+            if action == "MONITOR":
+                action = "INCREASE_FREQUENCY"
+                details = "Reduce headway to absorb event-driven demand."
+
+        if factors["passenger_demand_change_pct"] > 50:
+            reasons.append(f"Demand +{factors['passenger_demand_change_pct']}% above baseline")
+
+        if mu_boarding == 0.0:
+            reasons.append("Boarding throughput is zero (no bus at stop)")
+            action = "DISPATCH_ADDITIONAL"
+            details = "Stop is unserved — immediate vehicle dispatch needed."
+
+        if crowding_ratio >= 1.0:
+            reasons.append(f"Predicted overcrowding ({crowding_ratio}x capacity)")
+            if action == "MONITOR":
+                action = "REDIRECT_BUS"
+                details = "Reroute next arriving bus from a lower-demand stop."
+
+        if not reasons:
+            reasons.append("Load is within normal operational range")
+            details = "Continue monitoring. No action required."
+
+        return {
+            "action": action,
+            "severity": severity,
+            "reasons": reasons,
+            "details": details,
         }

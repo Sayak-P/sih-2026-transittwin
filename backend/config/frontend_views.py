@@ -14,8 +14,6 @@ import os
 class FrontendAppView(View):
     """Serve the Vite SPA index.html for any non-API route."""
 
-    _index_cache = None
-
     def get(self, request, *args, **kwargs):
         # Check if the request is for a static file in the dist root (e.g. favicon.svg)
         requested_path = request.path.lstrip("/")
@@ -32,9 +30,11 @@ class FrontendAppView(View):
                 status=503,
             )
 
-        # Cache the index.html content in memory (tiny file, ~500 bytes)
-        if FrontendAppView._index_cache is None or settings.DEBUG:
-            with open(index_path, "r", encoding="utf-8") as f:
-                FrontendAppView._index_cache = f.read()
+        with open(index_path, "r", encoding="utf-8") as f:
+            content = f.read()
 
-        return HttpResponse(FrontendAppView._index_cache, content_type="text/html")
+        response = HttpResponse(content, content_type="text/html")
+        response["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response["Pragma"] = "no-cache"
+        response["Expires"] = "0"
+        return response

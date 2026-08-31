@@ -1,0 +1,74 @@
+{
+  "training_features": [
+    "hour_of_day",
+    "day_of_week",
+    "is_weekend",
+    "month",
+    "is_rush_hour"
+  ],
+  "inference_features": [
+    "hour_of_day",
+    "is_weekend",
+    "event_size_nearby",
+    "current_traffic_congestion_pct",
+    "scheduled_headway_min"
+  ],
+  "inference_to_training_map": {
+    "hour_of_day": {
+      "source": "direct",
+      "training_feature": "hour_of_day"
+    },
+    "is_weekend": {
+      "source": "direct",
+      "training_feature": "is_weekend"
+    },
+    "event_size_nearby": {
+      "source": "not_in_training_data",
+      "note": "MTA dataset has no event data. This feature is accepted at inference but does not directly map to a training feature. The model was not trained on event data.",
+      "default_value": 0
+    },
+    "current_traffic_congestion_pct": {
+      "source": "not_in_training_data",
+      "note": "MTA dataset has no traffic congestion data. Accepted at inference but not a training feature.",
+      "default_value": 30.0
+    },
+    "scheduled_headway_min": {
+      "source": "not_in_training_data",
+      "note": "MTA dataset has no headway data. Accepted at inference but not a training feature.",
+      "default_value": 15.0
+    }
+  },
+  "feature_defaults": {
+    "hour_of_day": 12,
+    "day_of_week": 2,
+    "is_weekend": 0,
+    "month": 6,
+    "is_rush_hour": 0
+  },
+  "feature_ranges": {
+    "hour_of_day": [
+      0,
+      23
+    ],
+    "day_of_week": [
+      0,
+      6
+    ],
+    "is_weekend": [
+      0,
+      1
+    ],
+    "month": [
+      1,
+      12
+    ],
+    "is_rush_hour": [
+      0,
+      1
+    ]
+  },
+  "surge_range": [
+    1.0,
+    4.5
+  ]
+}

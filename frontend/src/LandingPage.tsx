@@ -3,9 +3,10 @@ interface LandingPageProps {
   onEnterCommandCenter: () => void;
   onEnterPredictions: () => void;
   onEnterRerouting: () => void;
+  onEnterInterventions?: () => void;
 }
 
-export default function LandingPage({ onEnterNavigator, onEnterCommandCenter, onEnterPredictions, onEnterRerouting }: LandingPageProps) {
+export default function LandingPage({ onEnterNavigator, onEnterCommandCenter, onEnterPredictions, onEnterRerouting, onEnterInterventions }: LandingPageProps) {
   return (
     <div className="landing-page bg-background text-on-surface antialiased font-body-md selection:bg-surface-tint/30 selection:text-surface-tint relative min-h-screen">
       {/* Noise Overlay */}
@@ -34,6 +35,9 @@ export default function LandingPage({ onEnterNavigator, onEnterCommandCenter, on
             <button onClick={onEnterNavigator} className="font-label-sm text-on-surface-variant hover:text-white transition-colors tracking-wide bg-transparent border-none cursor-pointer">Live Map</button>
             <button onClick={onEnterPredictions} className="font-label-sm text-on-surface-variant hover:text-white transition-colors tracking-wide bg-transparent border-none cursor-pointer">Predictions</button>
             <button onClick={onEnterRerouting} className="font-label-sm text-on-surface-variant hover:text-white transition-colors tracking-wide bg-transparent border-none cursor-pointer">Rerouting</button>
+            {onEnterInterventions && (
+              <button onClick={onEnterInterventions} className="font-label-sm text-secondary hover:text-white transition-colors tracking-wide bg-transparent border-none cursor-pointer">Interventions</button>
+            )}
             <button onClick={onEnterCommandCenter} className="font-label-sm text-on-surface-variant hover:text-white transition-colors tracking-wide bg-transparent border-none cursor-pointer">Analytics</button>
           </div>
         </div>

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 
 interface ReroutingDashboardProps {
-  onNavigate: (page: 'LANDING' | 'NAVIGATOR' | 'COMMAND_CENTER' | 'PREDICTIONS' | 'REROUTING') => void;
+  onNavigate: (page: 'LANDING' | 'NAVIGATOR' | 'COMMAND_CENTER' | 'PREDICTIONS' | 'REROUTING' | 'INTERVENTIONS') => void;
 }
 
 interface RerouteResult {
@@ -155,6 +155,15 @@ export default function ReroutingDashboard({ onNavigate }: ReroutingDashboardPro
             title="Command Center"
           >
             <span className="material-symbols-outlined text-[26px]">terminal</span>
+          </button>
+
+          {/* Intervention Simulator */}
+          <button
+            onClick={() => onNavigate('INTERVENTIONS')}
+            className="w-13 h-13 flex flex-col items-center justify-center text-indigo-400 hover:text-indigo-200 hover:bg-indigo-950/50 transition-all rounded-2xl cursor-pointer border-none bg-transparent p-3"
+            title="Intervention & Schedule Simulator"
+          >
+            <span className="material-symbols-outlined text-[26px]">science</span>
           </button>
         </div>
 

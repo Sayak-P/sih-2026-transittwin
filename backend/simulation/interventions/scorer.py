@@ -47,17 +47,18 @@ class CandidateScorer:
             "accessibility_preserved": not accessibility_violation
         }
 
-        # Normalize metrics for scoring (Lower score is better)
-        # We invert the saved metrics so more savings = lower penalty score
-        # max savings ~ 500 mins, max crowding savings ~ 2.0
         penalty_delay = max(0, 1.0 - (saved_waiting / 500.0))
         penalty_crowding = max(0, 1.0 - (saved_crowding / 2.0))
         penalty_energy = min(1.0, added_energy / 20.0)
+        penalty_safety = min(1.0, c_metrics.get("max_crowding_ratio", 0) / 1.5)
+        
+        weight_safety = getattr(profile, 'weight_safety', 0.0)
         
         # Composite score
         score = (penalty_delay * profile.weight_delay) + \
                 (penalty_crowding * profile.weight_crowding) + \
-                (penalty_energy * profile.weight_energy)
+                (penalty_energy * profile.weight_energy) + \
+                (penalty_safety * weight_safety)
                 
         if accessibility_violation:
             score += profile.accessibility_penalty

@@ -17,6 +17,14 @@ from core.api_navigation_views import BusListForNavigatorView, FindClearRouteVie
 from core.api_bus_availability_views import BusAvailabilityView
 from optimization.api_rerouting_views import ReroutingScenariosView, ReroutingCalculateView
 
+# New Digital Twin expansion views
+from simulation.api_views import (
+    EventListView, ActiveEventsView,
+    TicketingCurrentView, TicketingHistoricalView,
+    ScheduleSimulateView, ScheduleCompareView,
+    ScenarioSimulateView,
+)
+
 router = DefaultRouter()
 router.register(r'stops', StopViewSet)
 router.register(r'edges', EdgeViewSet)
@@ -54,6 +62,19 @@ urlpatterns = [
     # Rerouting Pre-Action Sandbox APIs
     path("api/v1/rerouting/scenarios/", ReroutingScenariosView.as_view()),
     path("api/v1/rerouting/calculate/", ReroutingCalculateView.as_view()),
+
+    # ── Digital Twin Expansion APIs ──
+    # Events
+    path("api/v1/events/", EventListView.as_view()),
+    path("api/v1/events/active/", ActiveEventsView.as_view()),
+    # Ticketing
+    path("api/v1/ticketing/current/", TicketingCurrentView.as_view()),
+    path("api/v1/ticketing/historical/", TicketingHistoricalView.as_view()),
+    # Schedule Simulation
+    path("api/v1/schedules/simulate/", ScheduleSimulateView.as_view()),
+    path("api/v1/schedules/compare/", ScheduleCompareView.as_view()),
+    # Scenario / What-If
+    path("api/v1/scenarios/simulate/", ScenarioSimulateView.as_view()),
 ]
 
 # Serve Vite's hashed assets (JS/CSS) from /assets/

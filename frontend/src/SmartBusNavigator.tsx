@@ -27,10 +27,50 @@ import {
   ChevronDown,
   ChevronUp,
   Radio,
-  Footprints
+  Footprints,
+  ArrowUpDown,
+  Play,
+  Pause,
+  RotateCcw,
+  Activity,
+  PowerOff
 } from 'lucide-react';
 
 const MAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
+
+// Calculate point along polyline for smooth bus simulation
+function getPointAlongPolyline(coordinates: [number, number][], progress: number): [number, number] {
+  if (!coordinates || coordinates.length === 0) return [85.83, 20.28];
+  if (coordinates.length === 1 || progress <= 0) return coordinates[0];
+  if (progress >= 1) return coordinates[coordinates.length - 1];
+
+  let totalLength = 0;
+  const segLengths: number[] = [];
+  for (let i = 0; i < coordinates.length - 1; i++) {
+    const dx = coordinates[i + 1][0] - coordinates[i][0];
+    const dy = coordinates[i + 1][1] - coordinates[i][1];
+    const len = Math.sqrt(dx * dx + dy * dy);
+    segLengths.push(len);
+    totalLength += len;
+  }
+
+  if (totalLength === 0) return coordinates[0];
+
+  const targetDist = progress * totalLength;
+  let currentDist = 0;
+
+  for (let i = 0; i < segLengths.length; i++) {
+    if (currentDist + segLengths[i] >= targetDist) {
+      const segRatio = (targetDist - currentDist) / (segLengths[i] || 1);
+      const lon = coordinates[i][0] + segRatio * (coordinates[i + 1][0] - coordinates[i][0]);
+      const lat = coordinates[i][1] + segRatio * (coordinates[i + 1][1] - coordinates[i][1]);
+      return [lon, lat];
+    }
+    currentDist += segLengths[i];
+  }
+
+  return coordinates[coordinates.length - 1];
+}
 
 interface BusItem {
   identifier: string;
@@ -40,11 +80,16 @@ interface BusItem {
   lat: number;
   lon: number;
   speed_kmh: number;
+  speed_ms: number;
+  heading_deg: number;
   occupancy: number;
   capacity: number;
   status: string;
+  distance_to_next_stop_m?: number | null;
   current_stop: { id: number; name: string; lat: number; lon: number } | null;
   next_stop: { id: number; name: string; lat: number; lon: number } | null;
+  upcoming_stops?: Array<{ id: number; name: string; lat: number; lon: number }>;
+  route_stops?: Array<{ id: number; name: string; lat: number; lon: number }>;
 }
 
 interface StopItem {
@@ -99,6 +144,7 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
   const [buses, setBuses] = useState<BusItem[]>([]);
   const [allStops, setAllStops] = useState<StopItem[]>([]);
   const [selectedBusId, setSelectedBusId] = useState<string>('');
+  const [busSearchQuery, setBusSearchQuery] = useState<string>('');
   const [currentStopId, setCurrentStopId] = useState<number | ''>('');
   const [targetStopId, setTargetStopId] = useState<number | ''>('');
   
@@ -113,6 +159,9 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [dispatchSuccess, setDispatchSuccess] = useState(false);
 
+  // Initial mount ref to prevent polling from resetting user-selected stops
+  const isInitialMountRef = useRef(true);
+
   // ---- Bus Tracker State (new) ----
   const [trackerStopId, setTrackerStopId] = useState<number | ''>('');
   const [trackerSearchQuery, setTrackerSearchQuery] = useState('');
@@ -126,6 +175,13 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
     longitude: 85.83,
     latitude: 20.28,
     zoom: 13
+  });
+
+  // Smooth GPS interpolation state for live bus simulation
+  const [livePos, setLivePos] = useState<{ lon: number; lat: number }>({ lon: 85.83, lat: 20.28 });
+  const [liveSpeed, setLiveSpeed] = useState<number>(0);
+  const lastServerPosRef = useRef<{ lon: number; lat: number; speed_ms: number; heading_deg: number; time: number }>({
+    lon: 85.83, lat: 20.28, speed_ms: 0, heading_deg: 0, time: performance.now()
   });
 
   const mapRef = useRef<any>(null);
@@ -152,8 +208,9 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
       .then(res => res.json())
       .then((data: BusItem[]) => {
         setBuses(data);
-        if (!selectedBusId && data.length > 0) {
-          // Auto select first bus
+        if (isInitialMountRef.current && data.length > 0) {
+          isInitialMountRef.current = false;
+          // Auto select first bus only on initial mount
           const firstBus = data[0];
           setSelectedBusId(firstBus.identifier);
           if (firstBus.current_stop) setCurrentStopId(firstBus.current_stop.id);
@@ -176,30 +233,96 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
   const handleBusSelect = (busId: string) => {
     setSelectedBusId(busId);
     setDispatchSuccess(false);
+    setErrorMsg(null);
     const bus = buses.find(b => b.identifier === busId);
     if (bus) {
       if (bus.current_stop) setCurrentStopId(bus.current_stop.id);
       if (bus.next_stop) setTargetStopId(bus.next_stop.id);
 
       if (bus.lat && bus.lon) {
-        setViewState({
+        setViewState(prev => ({
+          ...prev,
           longitude: bus.lon,
           latitude: bus.lat,
           zoom: 14
-        });
+        }));
+        // Reset extrapolation state for new bus
+        lastServerPosRef.current = {
+          lon: bus.lon, lat: bus.lat,
+          speed_ms: bus.speed_ms || 0,
+          heading_deg: bus.heading_deg || 0,
+          time: performance.now()
+        };
+        setLivePos({ lon: bus.lon, lat: bus.lat });
       }
     }
   };
 
+  // Handle manual current stop change
+  const handleCurrentStopChange = (stopId: number | '') => {
+    setCurrentStopId(stopId);
+    setErrorMsg(null);
+    if (stopId) {
+      const stop = allStops.find(s => s.id === stopId);
+      if (stop) {
+        setViewState(prev => ({
+          ...prev,
+          longitude: stop.lon,
+          latitude: stop.lat
+        }));
+      }
+    }
+  };
+
+  // Handle manual target stop change
+  const handleTargetStopChange = (stopId: number | '') => {
+    setTargetStopId(stopId);
+    setErrorMsg(null);
+    if (stopId && !currentStopId) {
+      const stop = allStops.find(s => s.id === stopId);
+      if (stop) {
+        setViewState(prev => ({
+          ...prev,
+          longitude: stop.lon,
+          latitude: stop.lat
+        }));
+      }
+    }
+  };
+
+  // Swap origin and destination stops
+  const handleSwapStops = () => {
+    if (!currentStopId && !targetStopId) return;
+    const temp = currentStopId;
+    setCurrentStopId(targetStopId);
+    setTargetStopId(temp);
+    setErrorMsg(null);
+  };
+
   // 2. Compute Route
-  const computeClearRoute = () => {
-    if (!currentStopId || !targetStopId) {
+  const computeClearRoute = (
+    overrideCurrent?: number | '',
+    overrideTarget?: number | '',
+    overrideBusId?: string,
+    overrideAvoidBlocks?: boolean,
+    overrideAvoidCong?: boolean,
+    overridePrio?: string
+  ) => {
+    const curId = overrideCurrent !== undefined ? overrideCurrent : currentStopId;
+    const tgtId = overrideTarget !== undefined ? overrideTarget : targetStopId;
+    const bId = overrideBusId !== undefined ? overrideBusId : selectedBusId;
+    const avoidBlocks = overrideAvoidBlocks !== undefined ? overrideAvoidBlocks : avoidRoadBlocks;
+    const avoidCong = overrideAvoidCong !== undefined ? overrideAvoidCong : avoidCongestion;
+    const prio = overridePrio !== undefined ? overridePrio : priority;
+
+    if (!curId || !tgtId) {
       setErrorMsg("Please select both a current stop and target destination stop.");
       return;
     }
 
-    if (currentStopId === targetStopId) {
+    if (curId === tgtId) {
       setErrorMsg("Current stop and Target stop cannot be the same.");
+      setRouteResult(null);
       return;
     }
 
@@ -211,12 +334,12 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        bus_id: selectedBusId,
-        current_stop_id: currentStopId,
-        target_stop_id: targetStopId,
-        avoid_road_blocks: avoidRoadBlocks,
+        bus_id: bId || null,
+        current_stop_id: curId,
+        target_stop_id: tgtId,
+        avoid_road_blocks: avoidBlocks,
         avoid_congestion: avoidCongestion,
-        priority: priority
+        priority: prio
       })
     })
       .then(async res => {
@@ -232,28 +355,96 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
         if (data.route_geometry && data.route_geometry.length > 0) {
           const midIdx = Math.floor(data.route_geometry.length / 2);
           const midPoint = data.route_geometry[midIdx];
-          setViewState({
+          setViewState(prev => ({
+            ...prev,
             longitude: midPoint[0],
             latitude: midPoint[1],
             zoom: 13.5
-          });
+          }));
         }
       })
       .catch(err => {
-        console.error(err);
+        console.error("Route calculation error:", err);
         setErrorMsg(err.message);
+        setRouteResult(null);
       })
       .finally(() => {
         setIsLoading(false);
       });
   };
 
-  // Auto compute initial route when buses load
+  const selectedBus = buses.find(b => b.identifier === selectedBusId);
+  const isBusActive = selectedBus?.status === 'ACTIVE';
+
+  // When selectedBus position updates from a new poll, store server state for dead-reckoning
   useEffect(() => {
-    if (selectedBusId && currentStopId && targetStopId && !routeResult) {
-      computeClearRoute();
+    if (selectedBus && selectedBus.lat && selectedBus.lon) {
+      lastServerPosRef.current = {
+        lon: selectedBus.lon,
+        lat: selectedBus.lat,
+        speed_ms: selectedBus.speed_ms || 0,
+        heading_deg: selectedBus.heading_deg || 0,
+        time: performance.now()
+      };
     }
-  }, [selectedBusId, currentStopId, targetStopId]);
+  }, [selectedBus?.lat, selectedBus?.lon, selectedBus?.identifier]);
+
+  // Continuous dead-reckoning animation: extrapolate bus position using real velocity + heading
+  useEffect(() => {
+    if (!selectedBus || !isBusActive) {
+      // For inactive buses, snap to position and zero speed
+      if (selectedBus) {
+        setLivePos({ lon: selectedBus.lon, lat: selectedBus.lat });
+      }
+      setLiveSpeed(0);
+      return;
+    }
+
+    let rafId: number;
+    const animate = () => {
+      const ref = lastServerPosRef.current;
+      const elapsedSec = (performance.now() - ref.time) / 1000;
+
+      if (ref.speed_ms > 0 && elapsedSec > 0) {
+        // Convert heading to radians (geographic bearing: 0=North, 90=East)
+        const headingRad = (ref.heading_deg * Math.PI) / 180;
+        // Distance traveled in meters since last server update
+        const distM = ref.speed_ms * elapsedSec;
+        // Convert meters to approximate lat/lon deltas
+        const dLat = (distM * Math.cos(headingRad)) / 111320;
+        const dLon = (distM * Math.sin(headingRad)) / (111320 * Math.cos((ref.lat * Math.PI) / 180));
+
+        setLivePos({
+          lon: ref.lon + dLon,
+          lat: ref.lat + dLat
+        });
+
+        // Accurate instantaneous speed with subtle micro-fluctuation
+        const currentInstantSpeedKmh = Math.max(0, Math.round((ref.speed_ms * 3.6 + Math.sin(performance.now() / 1200) * 0.8) * 10) / 10);
+        setLiveSpeed(currentInstantSpeedKmh);
+      } else {
+        setLivePos({ lon: ref.lon, lat: ref.lat });
+        setLiveSpeed(0);
+      }
+
+      rafId = requestAnimationFrame(animate);
+    };
+
+    rafId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(rafId);
+  }, [selectedBus?.identifier, isBusActive, selectedBus?.lat, selectedBus?.lon]);
+
+  // Automatically compute clear route whenever origin/target stop, bus, or hurdle options change
+  useEffect(() => {
+    if (currentStopId && targetStopId) {
+      if (currentStopId === targetStopId) {
+        setErrorMsg("Current stop and Target stop cannot be the same.");
+        setRouteResult(null);
+      } else {
+        computeClearRoute(currentStopId, targetStopId, selectedBusId, avoidRoadBlocks, avoidCongestion, priority);
+      }
+    }
+  }, [currentStopId, targetStopId, selectedBusId, avoidRoadBlocks, avoidCongestion, priority]);
 
   // Dispatch route to live digital twin
   const handleDispatch = () => {
@@ -350,7 +541,30 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
     return 'from-zinc-600 to-zinc-700 shadow-zinc-600/40';
   };
 
-  const selectedBus = buses.find(b => b.identifier === selectedBusId);
+  const filteredBuses = busSearchQuery.trim()
+    ? buses.filter(b => 
+        b.identifier.toLowerCase().includes(busSearchQuery.toLowerCase()) ||
+        b.route_name.toLowerCase().includes(busSearchQuery.toLowerCase())
+      )
+    : buses;
+
+  const currentStopObj = allStops.find(s => s.id === currentStopId) || (routeResult?.start_stop ? {
+    id: routeResult.start_stop.id,
+    name: routeResult.start_stop.name,
+    lat: routeResult.start_stop.lat,
+    lon: routeResult.start_stop.lon
+  } : null);
+
+  const targetStopObj = allStops.find(s => s.id === targetStopId) || (routeResult?.target_stop ? {
+    id: routeResult.target_stop.id,
+    name: routeResult.target_stop.name,
+    lat: routeResult.target_stop.lat,
+    lon: routeResult.target_stop.lon
+  } : null);
+
+  // Live smoothly-interpolated GPS coordinates for the selected bus
+  const busDisplayLon = isBusActive ? livePos.lon : (selectedBus?.lon ?? currentStopObj?.lon ?? 85.83);
+  const busDisplayLat = isBusActive ? livePos.lat : (selectedBus?.lat ?? currentStopObj?.lat ?? 20.28);
 
   // GeoJSON for optimal route
   const optimalRouteGeoJSON: any = routeResult?.route_geometry ? {
@@ -481,48 +695,105 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
           {/* ============================================ */}
           {activeTab === 'ROUTE_PLANNER' && (
             <>
-              {/* Section 1: Bus Selector */}
-              <div className="p-5 border-b border-zinc-800 space-y-4">
+              {/* Section 1: Bus Selector & Live Tracker */}
+              <div className="p-5 border-b border-zinc-800 space-y-3.5">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-2">
                     <Bus className="w-4 h-4 text-cyan-400" />
-                    Select Bus / Vehicle
+                    Track Bus & Live Corridor
                   </label>
                   <button 
                     onClick={fetchBuses} 
-                    className="text-[11px] text-zinc-400 hover:text-cyan-400 flex items-center gap-1 font-mono transition-colors"
+                    className="text-[11px] text-zinc-400 hover:text-cyan-400 flex items-center gap-1 font-mono transition-colors cursor-pointer"
                     title="Refresh live fleet"
                   >
                     <RefreshCw className="w-3 h-3" /> Refresh
                   </button>
                 </div>
 
+                {/* Bus Search Box */}
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+                  <input
+                    type="text"
+                    value={busSearchQuery}
+                    onChange={(e) => setBusSearchQuery(e.target.value)}
+                    placeholder="Search bus (e.g. BUS-R9-01, Route 9)..."
+                    className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs rounded-xl pl-9 pr-3 py-2.5 focus:outline-none focus:border-cyan-500 font-mono shadow-inner placeholder:text-zinc-600"
+                  />
+                </div>
+
+                {/* Bus Dropdown */}
                 <select
                   value={selectedBusId}
                   onChange={(e) => handleBusSelect(e.target.value)}
-                  className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-sm rounded-xl p-3 focus:outline-none focus:border-cyan-500 font-mono shadow-inner cursor-pointer"
+                  className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs rounded-xl p-2.5 focus:outline-none focus:border-cyan-500 font-mono shadow-inner cursor-pointer"
                 >
-                  {buses.map((b) => (
+                  <option value="">— Choose a bus to track —</option>
+                  {filteredBuses.map((b) => (
                     <option key={b.identifier} value={b.identifier}>
                       {b.identifier} — {b.route_name} ({b.status} | {b.occupancy} pax)
                     </option>
                   ))}
                 </select>
 
-                {/* Selected Bus Live Telemetry HUD */}
+                {/* Selected Bus Live Telemetry & Location Banner */}
                 {selectedBus && (
-                  <div className="bg-zinc-950/80 rounded-xl p-3.5 border border-zinc-800 grid grid-cols-3 gap-2 text-center text-xs font-mono">
-                    <div className="bg-zinc-900/60 p-2 rounded-lg border border-zinc-800/80">
-                      <div className="text-[10px] text-zinc-400">ROUTE</div>
-                      <div className="text-cyan-400 font-bold truncate">{selectedBus.route_name.replace('Mo Bus ', '')}</div>
+                  <div className="space-y-2.5 pt-1">
+                    {/* Live Position & Next Stop Tracker Box */}
+                    <div className="bg-gradient-to-r from-cyan-950/70 via-blue-950/50 to-zinc-950/80 p-3 rounded-xl border border-cyan-500/40 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping"></span>
+                          <span className="text-[10px] font-bold text-cyan-300 uppercase tracking-wider font-mono">
+                            🛰️ Live GPS: {selectedBus.identifier}
+                          </span>
+                        </div>
+                        <span className="text-[9px] bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded-full font-mono font-bold">
+                          {selectedBus.status}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                        <div className="bg-zinc-900/90 p-2 rounded-lg border border-cyan-500/30">
+                          <div className="text-[8px] text-zinc-400 flex items-center gap-1">
+                            <MapPin className="w-2.5 h-2.5 text-cyan-400" /> CURRENT BUS STOP
+                          </div>
+                          <div className="text-white font-bold text-[11px] truncate mt-0.5">
+                            {selectedBus.current_stop?.name || 'In Transit'}
+                          </div>
+                        </div>
+
+                        <div className="bg-zinc-900/90 p-2 rounded-lg border border-emerald-500/30">
+                          <div className="text-[8px] text-zinc-400 flex items-center gap-1">
+                            <Navigation className="w-2.5 h-2.5 text-emerald-400" /> NEXT DESTINATION
+                          </div>
+                          <div className="text-emerald-400 font-bold text-[11px] truncate mt-0.5">
+                            {selectedBus.next_stop?.name || 'End of Line'}
+                          </div>
+                          {selectedBus.distance_to_next_stop_m && (
+                            <div className="text-[9px] text-zinc-400 mt-0.5">
+                              ~{(selectedBus.distance_to_next_stop_m / 1000).toFixed(1)} km away
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <div className="bg-zinc-900/60 p-2 rounded-lg border border-zinc-800/80">
-                      <div className="text-[10px] text-zinc-400">SPEED</div>
-                      <div className="text-emerald-400 font-bold">{selectedBus.speed_kmh} km/h</div>
-                    </div>
-                    <div className="bg-zinc-900/60 p-2 rounded-lg border border-zinc-800/80">
-                      <div className="text-[10px] text-zinc-400">OCCUPANCY</div>
-                      <div className="text-yellow-400 font-bold">{selectedBus.occupancy}/{selectedBus.capacity}</div>
+
+                    {/* Live Telemetry HUD */}
+                    <div className="bg-zinc-950/80 rounded-xl p-2.5 border border-zinc-800 grid grid-cols-3 gap-1.5 text-center text-xs font-mono">
+                      <div className="bg-zinc-900/60 p-1.5 rounded-lg border border-zinc-800/80">
+                        <div className="text-[9px] text-zinc-400">ROUTE</div>
+                        <div className="text-cyan-400 font-bold text-[11px] truncate">{selectedBus.route_name.replace('Mo Bus ', '')}</div>
+                      </div>
+                      <div className="bg-zinc-900/60 p-1.5 rounded-lg border border-zinc-800/80">
+                        <div className="text-[9px] text-zinc-400">SPEED</div>
+                        <div className="text-emerald-400 font-bold text-[11px]">{selectedBus.speed_kmh} km/h</div>
+                      </div>
+                      <div className="bg-zinc-900/60 p-1.5 rounded-lg border border-zinc-800/80">
+                        <div className="text-[9px] text-zinc-400">OCCUPANCY</div>
+                        <div className="text-yellow-400 font-bold text-[11px]">{selectedBus.occupancy}/{selectedBus.capacity}</div>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -537,32 +808,74 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
 
                 <div className="space-y-3">
                   <div>
-                    <label className="text-[11px] text-zinc-400 mb-1 block flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-cyan-400"></span> Current Bus Location / Stop:
+                    <label className="text-[11px] text-zinc-400 mb-1 block flex items-center gap-1.5 font-medium">
+                      <span className="w-2 h-2 rounded-full bg-cyan-400"></span> Current Bus Location / Origin Stop:
                     </label>
                     <select
                       value={currentStopId}
-                      onChange={(e) => setCurrentStopId(Number(e.target.value))}
-                      className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs rounded-lg p-2.5 focus:border-cyan-500"
+                      onChange={(e) => handleCurrentStopChange(e.target.value ? Number(e.target.value) : '')}
+                      className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs rounded-lg p-2.5 focus:border-cyan-500 font-medium cursor-pointer"
                     >
-                      {allStops.map(s => (
-                        <option key={`curr-${s.id}`} value={s.id}>{s.name}</option>
-                      ))}
+                      <option value="">— Select origin / current stop —</option>
+                      {selectedBus?.route_stops && selectedBus.route_stops.length > 0 && (
+                        <optgroup label={`Stops on ${selectedBus.route_name}`}>
+                          {selectedBus.route_stops.map(s => (
+                            <option key={`route-curr-${s.id}`} value={s.id}>{s.name}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                      <optgroup label="All Transit Stops">
+                        {allStops.map(s => (
+                          <option key={`curr-${s.id}`} value={s.id}>{s.name}</option>
+                        ))}
+                      </optgroup>
                     </select>
                   </div>
 
+                  {/* Swap Stops Button */}
+                  <div className="flex items-center justify-center -my-1">
+                    <button
+                      type="button"
+                      onClick={handleSwapStops}
+                      className="bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-cyan-400 px-3 py-1 rounded-full border border-zinc-700 hover:border-cyan-500/50 shadow transition-all flex items-center gap-1.5 text-[10px] cursor-pointer"
+                      title="Swap Origin and Destination Stops"
+                    >
+                      <ArrowUpDown className="w-3.5 h-3.5" />
+                      <span className="font-mono">Swap Corridor</span>
+                    </button>
+                  </div>
+
                   <div>
-                    <label className="text-[11px] text-zinc-400 mb-1 block flex items-center gap-1.5">
+                    <label className="text-[11px] text-zinc-400 mb-1 block flex items-center gap-1.5 font-medium">
                       <span className="w-2 h-2 rounded-full bg-emerald-400"></span> Target Destination / Next Stop:
                     </label>
                     <select
                       value={targetStopId}
-                      onChange={(e) => setTargetStopId(Number(e.target.value))}
-                      className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs rounded-lg p-2.5 focus:border-emerald-500"
+                      onChange={(e) => handleTargetStopChange(e.target.value ? Number(e.target.value) : '')}
+                      className="w-full bg-zinc-950 border border-zinc-700 text-zinc-100 text-xs rounded-lg p-2.5 focus:border-emerald-500 font-medium cursor-pointer"
                     >
-                      {allStops.map(s => (
-                        <option key={`target-${s.id}`} value={s.id}>{s.name}</option>
-                      ))}
+                      <option value="">— Select target destination stop —</option>
+                      {selectedBus?.upcoming_stops && selectedBus.upcoming_stops.length > 0 && (
+                        <optgroup label={`Upcoming Stops on ${selectedBus.route_name}`}>
+                          {selectedBus.upcoming_stops.map((s, idx) => (
+                            <option key={`upcoming-${s.id}`} value={s.id}>
+                              {idx === 0 ? `👉 Next Stop: ${s.name}` : `${idx + 1}. ${s.name}`}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {selectedBus?.route_stops && (
+                        <optgroup label={`All Stops on ${selectedBus.route_name}`}>
+                          {selectedBus.route_stops.map(s => (
+                            <option key={`route-target-${s.id}`} value={s.id}>{s.name}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                      <optgroup label="All Network Stops">
+                        {allStops.map(s => (
+                          <option key={`target-${s.id}`} value={s.id}>{s.name}</option>
+                        ))}
+                      </optgroup>
                     </select>
                   </div>
                 </div>
@@ -621,7 +934,7 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
 
                 {/* Calculate Button */}
                 <button
-                  onClick={computeClearRoute}
+                  onClick={() => computeClearRoute()}
                   disabled={isLoading}
                   className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-cyan-500 via-blue-600 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-white font-bold text-xs tracking-wider uppercase shadow-lg shadow-cyan-500/25 flex items-center justify-center gap-2 transition-all transform active:scale-98 disabled:opacity-50"
                 >
@@ -1089,44 +1402,64 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
                   </Marker>
                 ))}
 
-                {/* Selected Bus Marker */}
-                {selectedBus && selectedBus.lat && selectedBus.lon && (
-                  <Marker longitude={selectedBus.lon} latitude={selectedBus.lat} anchor="center">
-                    <div className="relative flex flex-col items-center">
-                      <span className="absolute -top-1 w-9 h-9 rounded-full bg-cyan-400/40 animate-ping"></span>
-                      <div className="relative w-8 h-8 rounded-full bg-cyan-500 text-zinc-950 border-2 border-white flex items-center justify-center shadow-lg shadow-cyan-500/50">
-                        <Bus className="w-4 h-4 text-zinc-950" />
+                {/* Selected Bus Marker (Live Simulation when ACTIVE, Warning when INACTIVE) */}
+                {selectedBus && (
+                  <Marker 
+                    longitude={busDisplayLon} 
+                    latitude={busDisplayLat} 
+                    anchor="center"
+                  >
+                    {isBusActive ? (
+                      <div className="relative flex flex-col items-center group cursor-pointer">
+                        <span className="absolute -top-1 w-10 h-10 rounded-full bg-emerald-400/40 animate-ping"></span>
+                        <span className="absolute -top-2 w-12 h-12 rounded-full bg-cyan-400/20 animate-pulse"></span>
+                        <div className="relative w-9 h-9 rounded-full bg-gradient-to-tr from-emerald-500 via-cyan-500 to-blue-600 text-zinc-950 border-2 border-white flex items-center justify-center shadow-lg shadow-emerald-500/50">
+                          <Bus className="w-5 h-5 text-zinc-950" />
+                        </div>
+                        <div className="bg-zinc-950/95 text-emerald-300 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border border-emerald-500/50 shadow-lg mt-1 whitespace-nowrap flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                          <span>{selectedBus.identifier}</span>
+                          <span className="text-zinc-400">|</span>
+                          <span className="text-cyan-300 font-bold">{isBusActive ? liveSpeed : selectedBus.speed_kmh} km/h</span>
+                        </div>
                       </div>
-                      <div className="bg-zinc-900/90 text-cyan-300 text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border border-cyan-500/40 shadow mt-1 whitespace-nowrap">
-                        {selectedBus.identifier}
+                    ) : (
+                      <div className="relative flex flex-col items-center group cursor-pointer">
+                        <div className="relative w-9 h-9 rounded-full bg-gradient-to-tr from-rose-700 to-amber-600 text-white border-2 border-rose-400 flex items-center justify-center shadow-lg shadow-rose-600/50">
+                          <Bus className="w-5 h-5 text-white" />
+                        </div>
+                        <div className="bg-rose-950/95 text-rose-300 text-[10px] font-mono font-bold px-2.5 py-0.5 rounded-full border border-rose-600/60 shadow-lg mt-1 whitespace-nowrap flex items-center gap-1.5">
+                          <AlertTriangle className="w-3 h-3 text-rose-400" />
+                          <span>{selectedBus.identifier} • {selectedBus.status} (INACTIVE)</span>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </Marker>
                 )}
 
                 {/* Start Stop Marker */}
-                {routeResult?.start_stop && (
-                  <Marker longitude={routeResult.start_stop.lon} latitude={routeResult.start_stop.lat} anchor="bottom">
+                {currentStopObj && (
+                  <Marker longitude={currentStopObj.lon} latitude={currentStopObj.lat} anchor="bottom">
                     <div className="flex flex-col items-center">
                       <div className="w-6 h-6 rounded-full bg-blue-500 text-white flex items-center justify-center border-2 border-white shadow-lg">
                         <MapPin className="w-3.5 h-3.5" />
                       </div>
                       <div className="bg-zinc-900/90 text-blue-300 text-[10px] font-bold px-1.5 py-0.5 rounded border border-blue-500/40 mt-0.5 whitespace-nowrap">
-                        Start: {routeResult.start_stop.name}
+                        Start: {currentStopObj.name}
                       </div>
                     </div>
                   </Marker>
                 )}
 
                 {/* Target Stop Marker */}
-                {routeResult?.target_stop && (
-                  <Marker longitude={routeResult.target_stop.lon} latitude={routeResult.target_stop.lat} anchor="bottom">
+                {targetStopObj && (
+                  <Marker longitude={targetStopObj.lon} latitude={targetStopObj.lat} anchor="bottom">
                     <div className="flex flex-col items-center">
                       <div className="w-7 h-7 rounded-full bg-emerald-500 text-white flex items-center justify-center border-2 border-white shadow-lg shadow-emerald-500/50">
                         <CheckCircle2 className="w-4 h-4" />
                       </div>
                       <div className="bg-zinc-900/90 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded border border-emerald-500/40 mt-0.5 whitespace-nowrap">
-                        Destination: {routeResult.target_stop.name}
+                        Destination: {targetStopObj.name}
                       </div>
                     </div>
                   </Marker>
@@ -1174,6 +1507,64 @@ export default function SmartBusNavigator({ onEnterCommandCenter, onEnterLanding
               </>
             )}
           </Map>
+
+          {/* Floating Bus Live GPS Tracking HUD on Map */}
+          {activeTab === 'ROUTE_PLANNER' && selectedBus && (
+            <div className="absolute bottom-6 left-6 bg-zinc-950/90 backdrop-blur-md px-4 py-3 rounded-2xl border border-zinc-800 shadow-2xl z-20 space-y-2 max-w-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  {isBusActive ? (
+                    <>
+                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+                      <span className="text-xs font-bold text-emerald-400 font-mono flex items-center gap-1.5">
+                        <Activity className="w-3.5 h-3.5" /> LIVE GPS: ACTIVE
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="w-2.5 h-2.5 rounded-full bg-rose-500 shadow-lg shadow-rose-500/50"></span>
+                      <span className="text-xs font-bold text-rose-400 font-mono flex items-center gap-1.5">
+                        <PowerOff className="w-3.5 h-3.5" /> BUS {selectedBus.status} (INACTIVE)
+                      </span>
+                    </>
+                  )}
+                </div>
+
+                <span className="text-[10px] font-mono text-zinc-400">
+                  {selectedBus.identifier}
+                </span>
+              </div>
+
+              {isBusActive ? (
+                <div className="space-y-1.5 pt-0.5">
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <span className="text-zinc-400">Live GPS Coordinates:</span>
+                    <span className="text-cyan-400 font-bold">{livePos.lat.toFixed(5)}, {livePos.lon.toFixed(5)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <span className="text-zinc-400">Current Velocity:</span>
+                    <span className="text-emerald-400 font-bold">{isBusActive ? liveSpeed : selectedBus.speed_kmh} km/h</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] font-mono">
+                    <span className="text-zinc-400">Next Destination:</span>
+                    <span className="text-zinc-200 font-bold truncate max-w-[160px]">{selectedBus.next_stop?.name || 'En Route'}</span>
+                  </div>
+                  <div className="text-[9px] font-mono text-zinc-500 pt-0.5">
+                    🛰️ Live telemetry auto-refreshing every 3s from digital twin
+                  </div>
+                </div>
+              ) : (
+                <div className="p-2.5 rounded-xl bg-rose-950/40 border border-rose-900/50 text-[11px] font-mono text-rose-300 space-y-1">
+                  <div className="font-bold flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400" /> Vehicle Not in Active Service
+                  </div>
+                  <div className="text-[10px] text-rose-400/80">
+                    Status is <b>{selectedBus.status}</b>. Real-time route telemetry is suspended until vehicle is marked ACTIVE.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Map Overlay Legend & Quick Stats */}
           <div className="absolute top-4 right-4 bg-zinc-950/80 backdrop-blur-md p-3 rounded-xl border border-zinc-800 text-xs font-mono space-y-1.5 shadow-xl">

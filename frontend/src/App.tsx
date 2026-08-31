@@ -6,6 +6,7 @@ import LandingPage from './LandingPage';
 import SmartBusNavigator from './SmartBusNavigator';
 import PredictionsDashboard from './PredictionsDashboard';
 import ReroutingDashboard from './ReroutingDashboard';
+import InterventionSimulator from './InterventionSimulator';
 import EmergencySOS from './EmergencySOS';
 
 const MAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
@@ -43,8 +44,8 @@ function App() {
   const [version, setVersion] = useState<number>(0);
   const [twinStatus, setTwinStatus] = useState<any>(null);
 
-  // Navigation Page: 'LANDING', 'NAVIGATOR', 'COMMAND_CENTER', 'PREDICTIONS', or 'REROUTING'
-  const [currentPage, setCurrentPage] = useState<'LANDING' | 'NAVIGATOR' | 'COMMAND_CENTER' | 'PREDICTIONS' | 'REROUTING'>('LANDING');
+  // Navigation Page: 'LANDING', 'NAVIGATOR', 'COMMAND_CENTER', 'PREDICTIONS', 'REROUTING', or 'INTERVENTIONS'
+  const [currentPage, setCurrentPage] = useState<'LANDING' | 'NAVIGATOR' | 'COMMAND_CENTER' | 'PREDICTIONS' | 'REROUTING' | 'INTERVENTIONS'>('LANDING');
 
   // System Health
   const [health, setHealth] = useState<any>({ backend: 'OFFLINE', database: 'OFFLINE' });
@@ -408,6 +409,7 @@ function App() {
         onEnterCommandCenter={() => setCurrentPage('COMMAND_CENTER')}
         onEnterPredictions={() => setCurrentPage('PREDICTIONS')}
         onEnterRerouting={() => setCurrentPage('REROUTING')}
+        onEnterInterventions={() => setCurrentPage('INTERVENTIONS')}
       />
     );
   }
@@ -423,6 +425,14 @@ function App() {
   if (currentPage === 'REROUTING') {
     return (
       <ReroutingDashboard
+        onNavigate={(page) => setCurrentPage(page)}
+      />
+    );
+  }
+
+  if (currentPage === 'INTERVENTIONS') {
+    return (
+      <InterventionSimulator
         onNavigate={(page) => setCurrentPage(page)}
       />
     );
@@ -484,6 +494,14 @@ function App() {
           >
             <span>🔀</span>
             <span>Rerouting Sandbox</span>
+          </button>
+          <button
+            onClick={() => setCurrentPage('INTERVENTIONS')}
+            className="flex items-center gap-1.5 bg-indigo-950/80 hover:bg-indigo-900/80 text-indigo-300 px-3 py-1.5 rounded-lg text-xs font-bold shadow-md shadow-indigo-500/20 border border-indigo-500/40 transition-all cursor-pointer"
+            title="Open Intervention & Schedule Simulator"
+          >
+            <span>🧪</span>
+            <span>Intervention Simulator</span>
           </button>
           <h1 className="text-xl font-bold tracking-wider font-sans text-zinc-100">TRANSIT TWIN COMMAND CENTER</h1>
           {twinStatus && (

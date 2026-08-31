@@ -1,0 +1,72 @@
+{
+  "model_version": "2.0.0",
+  "model_type": "RandomForestRegressor",
+  "sklearn_params": {
+    "n_estimators": 100,
+    "max_depth": 10,
+    "min_samples_split": 5,
+    "min_samples_leaf": 3,
+    "random_state": 42
+  },
+  "dataset": {
+    "name": "NYC MTA Subway Hourly Ridership (2020-2024)",
+    "source_url": "https://data.ny.gov/Transportation/MTA-Subway-Hourly-Ridership-2020-2024/wujg-7c2s",
+    "license": "Public Domain (NYC Open Data)",
+    "query_period": "2023-01-01 to 2023-12-31",
+    "total_rows_downloaded": 50000,
+    "rows_after_cleaning": 50000,
+    "unique_stations": 424,
+    "data_type": "REAL"
+  },
+  "target_variable": {
+    "name": "surge_multiplier",
+    "derivation": "ratio of actual hourly ridership to station-hour-weekend median ridership",
+    "range": [
+      1.0,
+      4.5
+    ],
+    "maps_to": "E_event in M/M/c formula: Crowd(t+dt) = max(0, Crowd(t) + (lambda_base * E_event - mu_boarding) * dt)"
+  },
+  "training_features": [
+    "hour_of_day",
+    "day_of_week",
+    "is_weekend",
+    "month",
+    "is_rush_hour"
+  ],
+  "feature_importances": {
+    "hour_of_day": 0.5456,
+    "day_of_week": 0.2919,
+    "is_weekend": 0.1613,
+    "month": 0.0,
+    "is_rush_hour": 0.0011
+  },
+  "split_method": "chronological (70% train / 15% val / 15% test)",
+  "evaluation": {
+    "validation": {
+      "mae": 0.1101,
+      "rmse": 0.2118,
+      "r2": 0.0474
+    },
+    "test": {
+      "mae": 0.0687,
+      "rmse": 0.1139,
+      "r2": 0.0181,
+      "n_samples": 7500
+    },
+    "baseline": {
+      "mae": 0.0982,
+      "rmse": 0.2266,
+      "r2": -0.0902
+    },
+    "baseline_method": "DummyRegressor (mean strategy)"
+  },
+  "training_date": "2026-08-30T14:18:58.522013Z",
+  "trained_by": "prediction/train_model.py",
+  "notes": [
+    "Model trained on real NYC MTA ridership data.",
+    "Features event_size_nearby, traffic_congestion, and headway are NOT in training data.",
+    "These inference-only features are accepted but mapped to temporal proxies.",
+    "Retraining with city-specific (e.g. CRUT Bhubaneswar) data is recommended."
+  ]
+}

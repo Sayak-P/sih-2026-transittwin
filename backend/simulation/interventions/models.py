@@ -7,6 +7,10 @@ class InterventionType:
     SCHEDULE_MODIFICATION = "SCHEDULE_MODIFICATION"
     SPARE_VEHICLE_DEPLOYMENT = "SPARE_VEHICLE_DEPLOYMENT"
     TEMPORARY_STOP_CLOSURE = "TEMPORARY_STOP_CLOSURE"
+    FREQUENCY_ADJUSTMENT = "FREQUENCY_ADJUSTMENT"
+    BUS_DISPATCH = "BUS_DISPATCH"
+    BUS_HOLD = "BUS_HOLD"
+    SKIP_STOP = "SKIP_STOP"
 
 @dataclass
 class InterventionCandidate:
@@ -33,14 +37,15 @@ class ObjectiveProfile:
     weight_delay: float
     weight_crowding: float
     weight_energy: float
+    weight_safety: float
     accessibility_penalty: float
 
-# Built-in profiles
+# Built-in profiles (with safety weight)
 PROFILES = {
-    "MINIMUM_DELAY": ObjectiveProfile("MINIMUM_DELAY", 0.8, 0.1, 0.1, 999.0),
-    "SAFETY_FIRST": ObjectiveProfile("SAFETY_FIRST", 0.2, 0.8, 0.0, 999.0),
-    "ENERGY_EFFICIENT": ObjectiveProfile("ENERGY_EFFICIENT", 0.4, 0.1, 0.5, 999.0),
-    "BALANCED": ObjectiveProfile("BALANCED", 0.33, 0.33, 0.33, 999.0),
+    "MINIMUM_DELAY": ObjectiveProfile("MINIMUM_DELAY", 0.7, 0.1, 0.1, 0.1, 999.0),
+    "SAFETY_FIRST": ObjectiveProfile("SAFETY_FIRST", 0.1, 0.2, 0.0, 0.7, 999.0),
+    "ENERGY_EFFICIENT": ObjectiveProfile("ENERGY_EFFICIENT", 0.3, 0.1, 0.5, 0.1, 999.0),
+    "BALANCED": ObjectiveProfile("BALANCED", 0.25, 0.25, 0.25, 0.25, 999.0),
 }
 
 @dataclass

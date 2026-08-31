@@ -44,7 +44,10 @@ class EarlyWarningView(APIView):
                         if st['severity'] == "CRITICAL"
                         else f"Elevated arrivals: λ={st['lambda_base']} * E_event={st['e_event']}"
                     ),
-                    "action_text": st['actionText']
+                    "action_text": st['actionText'],
+                    "forecast": st.get('forecast', []),
+                    "contributing_factors": st.get('contributing_factors', {}),
+                    "recommended_action": st.get('recommended_action', {})
                 })
 
         data['warnings'] = warnings
